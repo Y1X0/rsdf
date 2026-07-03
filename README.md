@@ -1,2 +1,0 @@
-# yazan
-yazan
