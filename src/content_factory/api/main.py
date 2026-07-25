@@ -2,7 +2,18 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
-from content_factory.api.routers import accounts, analytics, auth, budget, campaigns, content, dashboard, niches, review
+from content_factory.api.routers import (
+    accounts,
+    analytics,
+    auth,
+    budget,
+    campaigns,
+    content,
+    dashboard,
+    niches,
+    publications,
+    review,
+)
 from content_factory.db.base import engine
 from content_factory.logging_config import configure_logging, get_logger
 from content_factory.services.budget_governor import BudgetExceeded
@@ -28,6 +39,7 @@ def create_app() -> FastAPI:
     app.include_router(dashboard.router)
     app.include_router(budget.router)
     app.include_router(accounts.router)
+    app.include_router(publications.router)
 
     @app.exception_handler(IdempotencyConflict)
     def _handle_idempotency_conflict(request: Request, exc: IdempotencyConflict) -> JSONResponse:

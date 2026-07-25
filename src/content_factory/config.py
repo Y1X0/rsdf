@@ -80,6 +80,21 @@ class Settings(BaseSettings):
     # not a silent omission.
     account_warmup_minimum_age_days: int = 7
 
+    # --- Publishing Agent (Phase 2 M4) ---
+    # Hard kill-switch, independent of any per-account state — flip to
+    # false to hard-disable POST /videos/{id}/publish for emergency
+    # rollback, regardless of account health or credentials configured.
+    publishing_enabled: bool = True
+    # Each is empty by default; publishing/factory.py falls back to
+    # ManualPublishingProvider whenever a platform's credentials (or a
+    # given account's own decrypted access token) aren't present.
+    tiktok_client_key: str = ""
+    tiktok_client_secret: str = ""
+    youtube_client_id: str = ""
+    youtube_client_secret: str = ""
+    instagram_app_id: str = ""
+    instagram_app_secret: str = ""
+
     def resolved_llm_provider(self) -> str:
         """Fall back to the fake provider if no key is configured, regardless
         of what LLM_PROVIDER says — prevents the app crashing on missing
