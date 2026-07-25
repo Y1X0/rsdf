@@ -95,6 +95,16 @@ class Settings(BaseSettings):
     instagram_app_id: str = ""
     instagram_app_secret: str = ""
 
+    # --- Media backup (Production Hardening Sprint H3, DR4) ---
+    # Off by default: local disk (media_storage_dir) is always the primary
+    # read path regardless of this setting — see services/media_backup.py's
+    # own docstring. AWS credentials come from boto3's own standard
+    # environment variables (AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/
+    # AWS_REGION), not custom settings here.
+    media_backup_enabled: bool = False
+    media_backup_s3_bucket: str = ""
+    media_backup_s3_prefix: str = "content-factory/media"
+
     def resolved_llm_provider(self) -> str:
         """Fall back to the fake provider if no key is configured, regardless
         of what LLM_PROVIDER says — prevents the app crashing on missing

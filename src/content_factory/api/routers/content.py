@@ -13,6 +13,7 @@ from content_factory.agents.script_agent import ScriptAgent
 from content_factory.api.deps import (
     get_db,
     get_llm_client,
+    get_media_backup_provider,
     get_notification_provider,
     get_tts_provider,
     get_video_renderer,
@@ -27,6 +28,7 @@ from content_factory.db.models.video import Video
 from content_factory.llm.base import LLMClient
 from content_factory.logging_config import get_logger
 from content_factory.notifications.base import NotificationProvider
+from content_factory.services.media_backup import MediaBackupProvider
 from content_factory.schemas.content import (
     ContentIdeaCreate,
     ContentIdeaOut,
@@ -213,6 +215,7 @@ def render_script(
     tts_provider: TTSProvider = Depends(get_tts_provider),
     video_renderer: VideoRenderer = Depends(get_video_renderer),
     notification_provider: NotificationProvider = Depends(get_notification_provider),
+    media_backup_provider: MediaBackupProvider = Depends(get_media_backup_provider),
     _principal: dict = Depends(require_operator),
 ) -> VideoOut:
     script = db.get(Script, script_id)
@@ -239,6 +242,7 @@ def render_script(
             tts_provider=tts_provider,
             video_renderer=video_renderer,
             template_id=payload.template_id or production_service.DEFAULT_TEMPLATE_ID,
+            media_backup_provider=media_backup_provider,
         )
         quality = quality_scoring.score_video(
             db, video=video, script=script, campaign=campaign, niche_id=campaign.niche_id

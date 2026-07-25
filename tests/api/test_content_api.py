@@ -103,6 +103,34 @@ def test_render_auto_rejects_when_quality_gate_is_configured(client, monkeypatch
         get_settings.cache_clear()
 
 
+def test_render_endpoint_invokes_the_injected_media_backup_provider(client):
+    """Production Hardening Sprint H3: the render endpoint's DI wiring
+    reaches all the way from api/deps.py through to production_service —
+    not just unit-tested at the service layer."""
+    from content_factory.api import deps
+    from content_factory.api.main import app
+    from content_factory.services.media_backup import MediaBackupProvider, MediaBackupResult
+
+    backed_up_paths = []
+
+    class _RecordingBackupProvider(MediaBackupProvider):
+        def backup(self, local_path: str) -> MediaBackupResult:
+            backed_up_paths.append(local_path)
+            return MediaBackupResult(backed_up=True, location=f"s3://bucket/{local_path}")
+
+    app.dependency_overrides[deps.get_media_backup_provider] = lambda: _RecordingBackupProvider()
+    try:
+        campaign = _create_campaign(client)
+        idea = client.post(f"/campaigns/{campaign['id']}/ideas", json={"concept_summary": "idea"}).json()
+        scripts = client.post(f"/ideas/{idea['id']}/scripts", json={"num_variants": 1}).json()
+        video = client.post(f"/scripts/{scripts[0]['id']}/render", json={}).json()
+
+        assert video["status"] in ("pending_review", "rejected")
+        assert len(backed_up_paths) == 2
+    finally:
+        del app.dependency_overrides[deps.get_media_backup_provider]
+
+
 def test_script_generation_is_idempotent(client):
     campaign = _create_campaign(client)
     idea = client.post(f"/campaigns/{campaign['id']}/ideas", json={"concept_summary": "idea"}).json()

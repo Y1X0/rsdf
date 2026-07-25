@@ -7,6 +7,7 @@ from content_factory.db.models.content import ContentIdea, Script
 from content_factory.db.models.enums import ProcessingStatus, VideoStatus
 from content_factory.db.models.video import Video
 from content_factory.services import production_service
+from content_factory.services.media_backup import MediaBackupProvider, MediaBackupResult
 
 
 def _make_video_and_script(db_session) -> tuple[Video, Script]:
@@ -60,3 +61,64 @@ def test_render_video_marks_failed_on_renderer_error(db_session, silent_tts_prov
 
     assert video.render_status == ProcessingStatus.FAILED
     assert video.status == VideoStatus.RENDER_FAILED
+
+
+def test_render_video_calls_media_backup_for_both_assets(db_session, silent_tts_provider, null_video_renderer):
+    """Production Hardening Sprint H3 (DR4): both the TTS audio and the
+    rendered video asset get offered to the backup provider."""
+    video, script = _make_video_and_script(db_session)
+    backed_up_paths = []
+
+    class _RecordingBackupProvider(MediaBackupProvider):
+        def backup(self, local_path: str) -> MediaBackupResult:
+            backed_up_paths.append(local_path)
+            return MediaBackupResult(backed_up=True, location=f"s3://bucket/{local_path}")
+
+    result = production_service.render_video(
+        db_session,
+        video=video,
+        script=script,
+        tts_provider=silent_tts_provider,
+        video_renderer=null_video_renderer,
+        media_backup_provider=_RecordingBackupProvider(),
+    )
+
+    assert len(backed_up_paths) == 2
+    assert any(p for p in backed_up_paths if "audio" in p or p.endswith(".wav"))
+    assert result.asset_url in backed_up_paths
+
+
+def test_render_video_succeeds_even_if_backup_provider_raises(db_session, silent_tts_provider, null_video_renderer):
+    """Backup is best-effort and must never fail an otherwise-successful
+    render (Production Hardening Sprint H3)."""
+    video, script = _make_video_and_script(db_session)
+
+    class _BoomBackupProvider(MediaBackupProvider):
+        def backup(self, local_path: str) -> MediaBackupResult:
+            raise RuntimeError("backup exploded")
+
+    result = production_service.render_video(
+        db_session,
+        video=video,
+        script=script,
+        tts_provider=silent_tts_provider,
+        video_renderer=null_video_renderer,
+        media_backup_provider=_BoomBackupProvider(),
+    )
+
+    assert result.render_status == ProcessingStatus.COMPLETED
+    assert result.status == VideoStatus.RENDERED
+
+
+def test_render_video_defaults_to_null_backup_provider_when_omitted(
+    db_session, silent_tts_provider, null_video_renderer
+):
+    """Existing callers (and every test written before this sprint) that
+    don't pass media_backup_provider at all must keep working unchanged."""
+    video, script = _make_video_and_script(db_session)
+
+    result = production_service.render_video(
+        db_session, video=video, script=script, tts_provider=silent_tts_provider, video_renderer=null_video_renderer
+    )
+
+    assert result.render_status == ProcessingStatus.COMPLETED

@@ -20,6 +20,8 @@ from content_factory.llm.base import LLMClient
 from content_factory.llm.factory import get_llm_client as _build_llm_client
 from content_factory.notifications.base import NotificationProvider
 from content_factory.notifications.factory import get_notification_provider as _build_notification_provider
+from content_factory.services.media_backup import MediaBackupProvider
+from content_factory.services.media_backup import get_media_backup_provider as _build_media_backup_provider
 from content_factory.video_production.renderer.base import VideoRenderer
 from content_factory.video_production.renderer.factory import get_video_renderer as _build_video_renderer
 from content_factory.video_production.tts.base import TTSProvider
@@ -88,3 +90,12 @@ def get_notification_provider() -> NotificationProvider:
 
 def get_auth_rate_limiter() -> FixedWindowRateLimiter:
     return _auth_rate_limiter_singleton()
+
+
+@lru_cache
+def _media_backup_provider_singleton() -> MediaBackupProvider:
+    return _build_media_backup_provider(get_settings())
+
+
+def get_media_backup_provider() -> MediaBackupProvider:
+    return _media_backup_provider_singleton()

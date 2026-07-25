@@ -23,6 +23,7 @@ from content_factory.db.models.enums import ProcessingStatus, VideoStatus
 from content_factory.db.models.video import Video
 from content_factory.logging_config import get_logger
 from content_factory.services import qc_service
+from content_factory.services.media_backup import MediaBackupProvider, NullMediaBackupProvider
 from content_factory.video_production.captions import build_captions
 from content_factory.video_production.renderer.base import RenderRequest, VideoRenderer
 from content_factory.video_production.tts.base import TTSProvider
@@ -33,6 +34,21 @@ DEFAULT_TEMPLATE_ID = "default_template_v1"
 DEFAULT_VOICE_ID = "default"
 
 
+def _backup_if_local(backup_provider: MediaBackupProvider, path: str | None, *, log) -> None:
+    """Best-effort, never fatal (Production Hardening Sprint H3, DR4) —
+    a failed or skipped backup must never fail an otherwise-successful
+    render. Skips remote-URL assets (nothing local to copy), matching
+    qc_service's existing check for the same case."""
+    if not path or path.startswith(("http://", "https://")):
+        return
+    try:
+        result = backup_provider.backup(path)
+        if result.backed_up:
+            log.info("media_backed_up", local_path=path, location=result.location)
+    except Exception:
+        log.error("media_backup_unexpected_error", local_path=path, exc_info=True)
+
+
 def render_video(
     db: Session,
     *,
@@ -41,7 +57,9 @@ def render_video(
     tts_provider: TTSProvider,
     video_renderer: VideoRenderer,
     template_id: str = DEFAULT_TEMPLATE_ID,
+    media_backup_provider: MediaBackupProvider | None = None,
 ) -> Video:
+    backup_provider = media_backup_provider or NullMediaBackupProvider()
     video.render_status = ProcessingStatus.IN_PROGRESS
     video.render_requested_at = datetime.now(UTC)
     db.flush()
@@ -78,6 +96,7 @@ def render_video(
         # Video row would still have no way to point back at them.
         video.tts_agent_run_id = tts_handle.run.id
         db.flush()
+        _backup_if_local(backup_provider, tts_result.audio_path, log=log)
 
         captions = build_captions(tts_result.word_timings)
 
@@ -111,6 +130,7 @@ def render_video(
             )
         video.render_agent_run_id = render_handle.run.id
         db.flush()
+        _backup_if_local(backup_provider, render_result.asset_url, log=log)
 
         video.asset_url = render_result.asset_url
         video.thumbnail_url = render_result.thumbnail_url
