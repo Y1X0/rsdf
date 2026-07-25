@@ -1,6 +1,7 @@
 """Import every model module so Base.metadata is fully populated — required
 for Alembic autogeneration and for Base.metadata.create_all() in tests."""
 
+from content_factory.db.models.account import AccountHealthSnapshot, OwnedAccount
 from content_factory.db.models.agent_run import AgentRun
 from content_factory.db.models.analytics import CostLedger, MetricsSnapshot, RevenueSnapshot, ViralScoreRecord
 from content_factory.db.models.budget import BudgetCeiling, ProviderQuotaUsage
@@ -15,6 +16,7 @@ from content_factory.db.models.review import ReviewDecision
 from content_factory.db.models.video import Video
 
 __all__ = [
+    "AccountHealthSnapshot",
     "AgentRun",
     "BudgetCeiling",
     "Campaign",
@@ -27,6 +29,7 @@ __all__ = [
     "MetricsSnapshot",
     "Niche",
     "NotificationLog",
+    "OwnedAccount",
     "ProviderQuotaUsage",
     "QualityScore",
     "ResearchBrief",

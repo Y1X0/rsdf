@@ -1,0 +1,146 @@
+"""Phase 2 M3 — Creator Account Management, exercised through the real HTTP
+layer: registering an account (with token encryption configured), reading
+it back without ever exposing the token, running a health check, and the
+warmup graduation gate."""
+
+from datetime import UTC, datetime, timedelta
+
+import pytest
+
+from content_factory.auth.jwt_service import create_access_token
+from content_factory.config import get_settings
+
+
+@pytest.fixture(autouse=True)
+def _token_encryption_key(monkeypatch):
+    """Every test in this file needs a real Fernet key configured so
+    oauth_token round-trips work; cleared afterward so other test files
+    (which assume no key is configured, matching Phase 1/2's zero-secrets
+    default) are unaffected."""
+    from cryptography.fernet import Fernet
+
+    monkeypatch.setenv("TOKEN_ENCRYPTION_KEY", Fernet.generate_key().decode())
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
+def _create_account(client, **overrides) -> dict:
+    payload = {"platform": "tiktok", "handle": "creator1", "daily_post_cap": 3}
+    payload.update(overrides)
+    return client.post("/accounts", json=payload).json()
+
+
+def test_create_account_never_returns_the_oauth_token(client):
+    resp = client.post(
+        "/accounts",
+        json={"platform": "tiktok", "handle": "creator1", "daily_post_cap": 3, "oauth_token": "super-secret-token"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["has_credentials"] is True
+    assert "oauth_token" not in body
+    assert "encrypted_oauth_token" not in body
+    assert "super-secret-token" not in resp.text
+
+
+def test_create_account_without_token_reports_no_credentials(client):
+    account = _create_account(client)
+    assert account["has_credentials"] is False
+    assert account["health_tier"] == "healthy"
+    assert account["warmup_status"] == "warming"
+
+
+def test_duplicate_platform_handle_rejected(client):
+    _create_account(client)
+    resp = client.post("/accounts", json={"platform": "tiktok", "handle": "creator1"})
+    assert resp.status_code == 409
+
+
+def test_list_and_get_account(client):
+    account = _create_account(client)
+    resp = client.get("/accounts")
+    assert resp.status_code == 200
+    assert any(a["id"] == account["id"] for a in resp.json())
+
+    resp = client.get(f"/accounts/{account['id']}")
+    assert resp.status_code == 200
+    assert resp.json()["handle"] == "creator1"
+
+
+def test_health_check_updates_account_and_persists_snapshot(client):
+    account = _create_account(client)
+    resp = client.post(
+        f"/accounts/{account['id']}/health-check",
+        json={"posting_cadence_used": 1, "engagement_trend": 0.1, "strikes_count": 0, "api_error_rate": 0.0},
+    )
+    assert resp.status_code == 200
+    snapshot = resp.json()
+    assert snapshot["health_score"] == 100.0
+    assert snapshot["tier"] == "healthy"
+
+    account_after = client.get(f"/accounts/{account['id']}").json()
+    assert account_after["health_score"] == 100.0
+
+
+def test_health_check_with_strikes_drops_tier(client):
+    account = _create_account(client)
+    resp = client.post(
+        f"/accounts/{account['id']}/health-check",
+        json={"posting_cadence_used": 1, "engagement_trend": 0.0, "strikes_count": 5, "api_error_rate": 0.0},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["tier"] == "restricted"
+
+
+def test_warmup_graduation_rejected_for_new_account(client):
+    account = _create_account(client)
+    resp = client.patch(f"/accounts/{account['id']}", json={"warmup_status": "active"})
+    assert resp.status_code == 422
+
+
+def test_warmup_graduation_allowed_for_old_healthy_account(client):
+    account = _create_account(client)
+
+    from content_factory.db.models.account import OwnedAccount
+
+    db = client.db_session_factory()
+    try:
+        row = db.get(OwnedAccount, account["id"])
+        row.created_at = datetime.now(UTC) - timedelta(days=30)
+        db.commit()
+    finally:
+        db.close()
+
+    resp = client.patch(f"/accounts/{account['id']}", json={"warmup_status": "active"})
+    assert resp.status_code == 200
+    assert resp.json()["warmup_status"] == "active"
+
+
+def test_active_account_cannot_be_moved_back_to_warming(client):
+    account = _create_account(client)
+
+    from content_factory.db.models.account import OwnedAccount
+
+    db = client.db_session_factory()
+    try:
+        row = db.get(OwnedAccount, account["id"])
+        row.created_at = datetime.now(UTC) - timedelta(days=30)
+        db.commit()
+    finally:
+        db.close()
+
+    client.patch(f"/accounts/{account['id']}", json={"warmup_status": "active"})
+    resp = client.patch(f"/accounts/{account['id']}", json={"warmup_status": "warming"})
+    assert resp.status_code == 422
+
+
+def test_non_operator_cannot_create_account(client):
+    settings = get_settings()
+    viewer_token = create_access_token(subject="read-only-client", role="viewer", settings=settings)
+    resp = client.post(
+        "/accounts",
+        json={"platform": "tiktok", "handle": "creator1"},
+        headers={"Authorization": f"Bearer {viewer_token}"},
+    )
+    assert resp.status_code == 403

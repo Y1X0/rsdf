@@ -69,6 +69,17 @@ class Settings(BaseSettings):
     quality_originality_auto_reject_floor: float = 0.0
     quality_policy_risk_auto_reject_ceiling: float = 100.0
 
+    # --- Creator Account Management (Phase 2 M3) ---
+    # No safe default — an OAuth token can only ever be encrypted/decrypted
+    # if this is set; see services/token_encryption.py. Generate with:
+    # python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    token_encryption_key: str = ""
+    # Warmup graduation criterion (ARCHITECTURE.md §8c). "Minimum organic
+    # post count" is the other stated criterion but has no data source yet
+    # (that's Publishing Agent/M4's `publications` table) — documented gap,
+    # not a silent omission.
+    account_warmup_minimum_age_days: int = 7
+
     def resolved_llm_provider(self) -> str:
         """Fall back to the fake provider if no key is configured, regardless
         of what LLM_PROVIDER says — prevents the app crashing on missing
