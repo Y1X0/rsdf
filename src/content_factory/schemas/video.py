@@ -1,0 +1,41 @@
+from datetime import datetime
+
+from pydantic import BaseModel, ConfigDict
+
+from content_factory.db.models.enums import ProcessingStatus, VideoStatus
+
+
+class RenderRequestBody(BaseModel):
+    template_id: str | None = None
+    idempotency_key: str | None = None
+
+
+class QualityScoreOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    originality_score: float | None
+    retention_prediction_score: float | None
+    policy_risk_score: float | None
+    monetization_probability_score: float | None
+    model_version: str
+    computed_at: datetime
+
+
+class VideoOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    script_id: int
+    status: VideoStatus
+    template_id: str | None
+    render_status: ProcessingStatus
+    asset_url: str | None
+    thumbnail_url: str | None
+    duration_s: float | None
+    voice_id: str | None
+    caption_style: str | None
+    contains_ai_voice: bool
+    contains_ai_visual: bool
+    qc_status: str | None
+    created_at: datetime
+    quality_score: QualityScoreOut | None = None
