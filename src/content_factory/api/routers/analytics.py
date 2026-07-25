@@ -1,15 +1,19 @@
-"""Analytics foundation (goal #7): views/retention/engagement/revenue/cost."""
+"""Analytics foundation (goal #7): views/retention/engagement/revenue/cost.
+Every route requires authentication; submissions require the operator role."""
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from content_factory.api.deps import get_db
+from content_factory.auth.dependencies import require_auth, require_operator
 from content_factory.db.models.video import Video
 from content_factory.schemas.analytics import (
+    CostEntryOut,
     CostSubmitRequest,
     MetricsResponse,
     MetricsSubmitRequest,
     ProfitSummaryOut,
+    RevenueEntryOut,
     RevenueSubmitRequest,
     ViralScoreOut,
 )
@@ -19,7 +23,12 @@ router = APIRouter(prefix="/videos", tags=["analytics"])
 
 
 @router.post("/{video_id}/metrics", response_model=MetricsResponse)
-def submit_metrics(video_id: int, payload: MetricsSubmitRequest, db: Session = Depends(get_db)) -> MetricsResponse:
+def submit_metrics(
+    video_id: int,
+    payload: MetricsSubmitRequest,
+    db: Session = Depends(get_db),
+    _principal: dict = Depends(require_operator),
+) -> MetricsResponse:
     video = db.get(Video, video_id)
     if video is None:
         raise HTTPException(status_code=404, detail="Video not found")
@@ -44,8 +53,13 @@ def submit_metrics(video_id: int, payload: MetricsSubmitRequest, db: Session = D
     )
 
 
-@router.post("/{video_id}/cost")
-def submit_cost(video_id: int, payload: CostSubmitRequest, db: Session = Depends(get_db)) -> dict:
+@router.post("/{video_id}/cost", response_model=CostEntryOut)
+def submit_cost(
+    video_id: int,
+    payload: CostSubmitRequest,
+    db: Session = Depends(get_db),
+    _principal: dict = Depends(require_operator),
+) -> CostEntryOut:
     video = db.get(Video, video_id)
     if video is None:
         raise HTTPException(status_code=404, detail="Video not found")
@@ -57,11 +71,16 @@ def submit_cost(video_id: int, payload: CostSubmitRequest, db: Session = Depends
         provider=payload.provider,
         note=payload.note,
     )
-    return {"id": entry.id, "cost_usd": float(entry.cost_usd)}
+    return CostEntryOut(id=entry.id, cost_usd=float(entry.cost_usd))
 
 
-@router.post("/{video_id}/revenue")
-def submit_revenue(video_id: int, payload: RevenueSubmitRequest, db: Session = Depends(get_db)) -> dict:
+@router.post("/{video_id}/revenue", response_model=RevenueEntryOut)
+def submit_revenue(
+    video_id: int,
+    payload: RevenueSubmitRequest,
+    db: Session = Depends(get_db),
+    _principal: dict = Depends(require_operator),
+) -> RevenueEntryOut:
     video = db.get(Video, video_id)
     if video is None:
         raise HTTPException(status_code=404, detail="Video not found")
@@ -75,11 +94,13 @@ def submit_revenue(video_id: int, payload: RevenueSubmitRequest, db: Session = D
         payout_pending=payload.payout_pending,
         status=payload.status,
     )
-    return {"id": snapshot.id, "payout_realized": float(snapshot.payout_realized)}
+    return RevenueEntryOut(id=snapshot.id, payout_realized=float(snapshot.payout_realized))
 
 
 @router.get("/{video_id}/profit", response_model=ProfitSummaryOut)
-def get_profit(video_id: int, db: Session = Depends(get_db)) -> ProfitSummaryOut:
+def get_profit(
+    video_id: int, db: Session = Depends(get_db), _principal: dict = Depends(require_auth)
+) -> ProfitSummaryOut:
     video = db.get(Video, video_id)
     if video is None:
         raise HTTPException(status_code=404, detail="Video not found")

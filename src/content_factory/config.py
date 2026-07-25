@@ -33,6 +33,18 @@ class Settings(BaseSettings):
     renderer_backend: str = "null"  # "template_pillow" | "null"
     media_storage_dir: str = "./var/media"
 
+    # --- Auth (v1.1, PHASE1_AUDIT.md F2) ---
+    # No user database in Phase 1 — a small, fixed set of pre-shared service
+    # credentials is issued JWTs, matching the actual single-operator usage
+    # today. jwt_secret_key has no safe default: if it's empty, every
+    # authenticated route fails closed (500, "not configured") rather than
+    # silently accepting unsigned/unverifiable tokens.
+    jwt_secret_key: str = ""
+    jwt_algorithm: str = "HS256"
+    jwt_expires_minutes: int = 60
+    auth_client_id: str = "phase1-operator"
+    auth_client_secret: str = ""
+
     def resolved_llm_provider(self) -> str:
         """Fall back to the fake provider if no key is configured, regardless
         of what LLM_PROVIDER says — prevents the app crashing on missing

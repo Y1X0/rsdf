@@ -12,6 +12,7 @@ from content_factory.agents.research_agent import ResearchAgent
 from content_factory.agents.script_agent import ScriptAgent
 from content_factory.api.deps import get_db, get_llm_client, get_tts_provider, get_video_renderer
 from content_factory.api.serializers import to_video_out
+from content_factory.auth.dependencies import require_auth, require_operator
 from content_factory.db.models.campaign import Campaign
 from content_factory.db.models.content import ContentIdea, ResearchBrief, Script
 from content_factory.db.models.enums import VideoStatus
@@ -42,6 +43,7 @@ def run_research(
     payload: ResearchRequest,
     db: Session = Depends(get_db),
     llm_client: LLMClient = Depends(get_llm_client),
+    _principal: dict = Depends(require_operator),
 ) -> ResearchBriefOut:
     campaign = db.get(Campaign, campaign_id)
     if campaign is None:
@@ -69,7 +71,9 @@ def run_research(
 
 
 @router.get("/campaigns/{campaign_id}/research", response_model=list[ResearchBriefOut])
-def list_research_briefs(campaign_id: int, db: Session = Depends(get_db)) -> list[ResearchBriefOut]:
+def list_research_briefs(
+    campaign_id: int, db: Session = Depends(get_db), _principal: dict = Depends(require_auth)
+) -> list[ResearchBriefOut]:
     briefs = (
         db.query(ResearchBrief)
         .filter(ResearchBrief.campaign_id == campaign_id)
@@ -80,7 +84,12 @@ def list_research_briefs(campaign_id: int, db: Session = Depends(get_db)) -> lis
 
 
 @router.post("/campaigns/{campaign_id}/ideas", response_model=ContentIdeaOut)
-def create_idea(campaign_id: int, payload: ContentIdeaCreate, db: Session = Depends(get_db)) -> ContentIdeaOut:
+def create_idea(
+    campaign_id: int,
+    payload: ContentIdeaCreate,
+    db: Session = Depends(get_db),
+    _principal: dict = Depends(require_operator),
+) -> ContentIdeaOut:
     campaign = db.get(Campaign, campaign_id)
     if campaign is None:
         raise HTTPException(status_code=404, detail="Campaign not found")
@@ -96,7 +105,9 @@ def create_idea(campaign_id: int, payload: ContentIdeaCreate, db: Session = Depe
 
 
 @router.get("/campaigns/{campaign_id}/ideas", response_model=list[ContentIdeaOut])
-def list_ideas(campaign_id: int, db: Session = Depends(get_db)) -> list[ContentIdeaOut]:
+def list_ideas(
+    campaign_id: int, db: Session = Depends(get_db), _principal: dict = Depends(require_auth)
+) -> list[ContentIdeaOut]:
     ideas = (
         db.query(ContentIdea)
         .filter(ContentIdea.campaign_id == campaign_id)
@@ -124,6 +135,7 @@ def generate_scripts(
     payload: ScriptGenerateRequest,
     db: Session = Depends(get_db),
     llm_client: LLMClient = Depends(get_llm_client),
+    _principal: dict = Depends(require_operator),
 ) -> list[ScriptOut]:
     idea = db.get(ContentIdea, idea_id)
     if idea is None:
@@ -155,13 +167,17 @@ def generate_scripts(
 
 
 @router.get("/ideas/{idea_id}/scripts", response_model=list[ScriptOut])
-def list_scripts(idea_id: int, db: Session = Depends(get_db)) -> list[ScriptOut]:
+def list_scripts(
+    idea_id: int, db: Session = Depends(get_db), _principal: dict = Depends(require_auth)
+) -> list[ScriptOut]:
     scripts = db.query(Script).filter(Script.idea_id == idea_id).order_by(Script.created_at.desc()).all()
     return [ScriptOut.model_validate(s) for s in scripts]
 
 
 @router.get("/scripts/{script_id}", response_model=ScriptOut)
-def get_script(script_id: int, db: Session = Depends(get_db)) -> ScriptOut:
+def get_script(
+    script_id: int, db: Session = Depends(get_db), _principal: dict = Depends(require_auth)
+) -> ScriptOut:
     script = db.get(Script, script_id)
     if script is None:
         raise HTTPException(status_code=404, detail="Script not found")
@@ -175,6 +191,7 @@ def render_script(
     db: Session = Depends(get_db),
     tts_provider: TTSProvider = Depends(get_tts_provider),
     video_renderer: VideoRenderer = Depends(get_video_renderer),
+    _principal: dict = Depends(require_operator),
 ) -> VideoOut:
     script = db.get(Script, script_id)
     if script is None:
@@ -215,12 +232,19 @@ def render_script(
 
 
 @router.get("/hooks", response_model=list[HookOut])
-def list_hooks(niche_id: int | None = None, limit: int = 20, db: Session = Depends(get_db)) -> list[HookOut]:
+def list_hooks(
+    niche_id: int | None = None,
+    limit: int = 20,
+    db: Session = Depends(get_db),
+    _principal: dict = Depends(require_auth),
+) -> list[HookOut]:
     hooks = content_intelligence.get_top_hooks(db, niche_id=niche_id, limit=limit)
     return [HookOut.model_validate(h) for h in hooks]
 
 
 @router.get("/patterns", response_model=list[LearningPatternOut])
-def list_patterns(niche_id: int | None = None, db: Session = Depends(get_db)) -> list[LearningPatternOut]:
+def list_patterns(
+    niche_id: int | None = None, db: Session = Depends(get_db), _principal: dict = Depends(require_auth)
+) -> list[LearningPatternOut]:
     patterns = content_intelligence.get_patterns(db, niche_id=niche_id)
     return [LearningPatternOut.model_validate(p) for p in patterns]

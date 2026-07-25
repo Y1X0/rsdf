@@ -30,7 +30,11 @@ class Campaign(TimestampMixin, Base):
     )
 
     brand_name: Mapped[str] = mapped_column(String(200))
-    niche_id: Mapped[int | None] = mapped_column(ForeignKey("niches.id"), nullable=True)
+    # v1.1 (PHASE1_AUDIT.md F6): indexed — filtered directly in
+    # quality_scoring.compute_originality_score's join on every render, and
+    # now also in campaign_scoring.compute_competition_level's internal
+    # campaign-count derivation.
+    niche_id: Mapped[int | None] = mapped_column(ForeignKey("niches.id"), nullable=True, index=True)
 
     payout_model: Mapped[str | None] = mapped_column(String(100), nullable=True)
     cpm_rate: Mapped[float | None] = mapped_column(Float, nullable=True)

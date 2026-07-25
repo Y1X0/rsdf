@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from content_factory.api.deps import get_db
+from content_factory.auth.dependencies import require_auth
 from content_factory.schemas.dashboard import DashboardSummaryOut
 from content_factory.services import analytics_service
 
@@ -15,6 +16,8 @@ router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
 
 @router.get("/summary", response_model=DashboardSummaryOut)
-def dashboard_summary(db: Session = Depends(get_db)) -> DashboardSummaryOut:
+def dashboard_summary(
+    db: Session = Depends(get_db), _principal: dict = Depends(require_auth)
+) -> DashboardSummaryOut:
     summary = analytics_service.get_dashboard_summary(db)
     return DashboardSummaryOut(**summary)

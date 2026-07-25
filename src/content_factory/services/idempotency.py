@@ -9,6 +9,22 @@ of the request's business-relevant fields, and either supplies an explicit
 `idempotency_key` (client-controlled) or lets the request's own fingerprint
 serve as the key — so identical repeated requests are deduplicated even
 when the caller didn't think to pass a key.
+
+**v1.1 fixes (PHASE1_AUDIT.md F1 and F5):**
+
+1. The COMPLETED/FAILED transitions now `commit()` instead of `flush()`.
+   Previously, a failed request's IdempotencyRecord was only ever flushed,
+   so `api/deps.py`'s end-of-request rollback erased it along with
+   everything else — meaning the "FAILED -> allow retry" branch below was
+   reachable in unit tests (which call this function against a bare,
+   never-rolled-back session) but not through the real API, where a failed
+   request left *no* record behind at all. Committing here makes a FAILED
+   record durably outlive the request that produced it, so a genuine retry
+   finds it and resumes correctly instead of quietly starting over blind.
+2. Creating a brand-new record is now a safe upsert (`_get_or_create_record`
+   below): a concurrent duplicate request racing to create the same
+   (scope, key) row no longer surfaces as an unhandled `IntegrityError` —
+   the loser falls back to the winner's row instead.
 """
 
 import hashlib
@@ -16,6 +32,7 @@ import json
 from collections.abc import Callable
 from typing import Any
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from content_factory.db.models.enums import ProcessingStatus
@@ -40,6 +57,42 @@ def compute_fingerprint(payload: dict) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
+def _query_record(db: Session, *, scope: str, key: str) -> IdempotencyRecord | None:
+    return (
+        db.query(IdempotencyRecord)
+        .filter(IdempotencyRecord.scope == scope, IdempotencyRecord.key == key)
+        .one_or_none()
+    )
+
+
+def _get_or_create_record(
+    db: Session, *, scope: str, key: str, fingerprint: str
+) -> tuple[IdempotencyRecord, bool]:
+    """Safe upsert (PHASE1_AUDIT.md F5): try to insert a brand-new
+    IN_PROGRESS record inside a SAVEPOINT; if a concurrent request already
+    won the race to create the same (scope, key) row (unique constraint),
+    roll back just the failed insert and fall back to the winner's row
+    instead of surfacing the IntegrityError to the caller. Returns
+    (record, just_created)."""
+    existing = _query_record(db, scope=scope, key=key)
+    if existing is not None:
+        return existing, False
+
+    try:
+        with db.begin_nested():
+            record = IdempotencyRecord(
+                scope=scope, key=key, request_fingerprint=fingerprint, status=ProcessingStatus.IN_PROGRESS
+            )
+            db.add(record)
+            db.flush()
+        return record, True
+    except IntegrityError:
+        existing = _query_record(db, scope=scope, key=key)
+        if existing is None:
+            raise  # pragma: no cover - would mean the row vanished entirely, not a race
+        return existing, False
+
+
 def run_idempotent(
     db: Session,
     *,
@@ -55,13 +108,9 @@ def run_idempotent(
     fingerprint = compute_fingerprint(payload)
     key = idempotency_key or fingerprint
 
-    record = (
-        db.query(IdempotencyRecord)
-        .filter(IdempotencyRecord.scope == scope, IdempotencyRecord.key == key)
-        .one_or_none()
-    )
+    record, just_created = _get_or_create_record(db, scope=scope, key=key, fingerprint=fingerprint)
 
-    if record is not None:
+    if not just_created:
         if record.request_fingerprint != fingerprint:
             raise IdempotencyConflict(
                 f"Idempotency key {key!r} was already used for scope {scope!r} "
@@ -72,15 +121,12 @@ def run_idempotent(
             return load_existing(record.result_entity_id), False
         if record.status == ProcessingStatus.IN_PROGRESS:
             raise IdempotencyInProgress(f"Request {key!r} for scope {scope!r} is already in progress.")
-        # FAILED -> allow retry, reuse the same record.
+        # FAILED -> allow retry, reuse the same record. This branch is now
+        # reachable through the real API (not just direct unit tests)
+        # because the FAILED transition below commits.
         record.status = ProcessingStatus.IN_PROGRESS
         record.error_message = None
-    else:
-        record = IdempotencyRecord(
-            scope=scope, key=key, request_fingerprint=fingerprint, status=ProcessingStatus.IN_PROGRESS
-        )
-        db.add(record)
-    db.flush()
+        db.flush()
 
     try:
         entity = work_fn()
@@ -88,12 +134,12 @@ def run_idempotent(
         record.status = ProcessingStatus.COMPLETED
         record.result_entity_type = entity_type
         record.result_entity_id = entity.id
-        db.flush()
+        db.commit()
         logger.info("idempotent_work_completed", scope=scope, key=key, entity_id=entity.id)
         return entity, True
     except Exception as exc:
         record.status = ProcessingStatus.FAILED
         record.error_message = str(exc)
-        db.flush()
+        db.commit()
         logger.error("idempotent_work_failed", scope=scope, key=key, error=str(exc))
         raise

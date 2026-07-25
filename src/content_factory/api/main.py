@@ -1,9 +1,13 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from sqlalchemy import text
 
-from content_factory.api.routers import analytics, campaigns, content, dashboard, review
-from content_factory.logging_config import configure_logging
+from content_factory.api.routers import analytics, auth, campaigns, content, dashboard, niches, review
+from content_factory.db.base import engine
+from content_factory.logging_config import configure_logging, get_logger
 from content_factory.services.idempotency import IdempotencyConflict, IdempotencyInProgress
+
+logger = get_logger(__name__)
 
 
 def create_app() -> FastAPI:
@@ -11,10 +15,12 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="AI Content Factory — Phase 1 MVP",
         description="Whop Content Rewards content pipeline. See docs/ARCHITECTURE.md and docs/PHASE1.md.",
-        version="0.1.0",
+        version="1.1.0",
     )
 
+    app.include_router(auth.router)
     app.include_router(campaigns.router)
+    app.include_router(niches.router)
     app.include_router(content.router)
     app.include_router(review.router)
     app.include_router(analytics.router)
@@ -28,8 +34,31 @@ def create_app() -> FastAPI:
     def _handle_idempotency_in_progress(request: Request, exc: IdempotencyInProgress) -> JSONResponse:
         return JSONResponse(status_code=409, content={"detail": str(exc)})
 
+    @app.exception_handler(Exception)
+    def _handle_unexpected_error(request: Request, exc: Exception) -> JSONResponse:
+        # v1.1: previously there was no catch-all handler, so any unhandled
+        # service exception propagated past Starlette's TestClient as a raw
+        # Python exception instead of an HTTP response — which is also
+        # exactly what happens with a real ASGI server in production
+        # (uvicorn returns a bare 500 with no logged context of its own).
+        # This logs the failure with full context and returns a generic,
+        # non-leaking error body.
+        logger.error("unhandled_exception", path=str(request.url.path), method=request.method, exc_info=True)
+        return JSONResponse(status_code=500, content={"detail": "Internal server error"})
+
     @app.get("/health", tags=["health"])
     def health() -> dict:
+        # Uses its own short-lived connection, independent of the
+        # request-scoped session (api/deps.get_db) — a liveness check
+        # shouldn't share transaction state with business requests, and
+        # this way a failed check can't leave a session in an aborted-
+        # transaction state for anything else to trip over.
+        try:
+            with engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+        except Exception:
+            logger.error("health_check_db_failed", exc_info=True)
+            return JSONResponse(status_code=503, content={"status": "unhealthy", "reason": "database unreachable"})
         return {"status": "ok"}
 
     return app

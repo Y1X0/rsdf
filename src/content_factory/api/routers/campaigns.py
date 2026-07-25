@@ -1,15 +1,18 @@
 """Campaign workflow (goal #1): manual campaign input, storage, and Campaign
-Intelligence scoring. Creation is idempotency-protected (adjustment #5)."""
+Intelligence scoring. Creation is idempotency-protected (adjustment #5).
+Every route requires authentication (PHASE1_AUDIT.md F2); mutating routes
+additionally require the operator role."""
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from content_factory.api.deps import get_db
+from content_factory.auth.dependencies import require_auth, require_operator
 from content_factory.db.models.campaign import Campaign
 from content_factory.db.models.niche import Niche
 from content_factory.logging_config import get_logger
 from content_factory.schemas.campaign import CampaignCreate, CampaignOut, CampaignScoreOut
-from content_factory.services import campaign_scoring, idempotency
+from content_factory.services import campaign_scoring, db_safety, idempotency
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/campaigns", tags=["campaigns"])
@@ -25,16 +28,23 @@ def _to_campaign_out(campaign: Campaign) -> CampaignOut:
 def _get_or_create_niche(db: Session, niche_name: str | None) -> Niche | None:
     if not niche_name:
         return None
-    niche = db.query(Niche).filter(Niche.name == niche_name).one_or_none()
-    if niche is None:
-        niche = Niche(name=niche_name)
-        db.add(niche)
-        db.flush()
+    return db_safety.get_or_create(
+        db,
+        query=lambda: db.query(Niche).filter(Niche.name == niche_name).one_or_none(),
+        create=lambda: _add_niche(db, niche_name),
+    )
+
+
+def _add_niche(db: Session, niche_name: str) -> Niche:
+    niche = Niche(name=niche_name)
+    db.add(niche)
     return niche
 
 
 @router.post("", response_model=CampaignOut)
-def create_campaign(payload: CampaignCreate, db: Session = Depends(get_db)) -> CampaignOut:
+def create_campaign(
+    payload: CampaignCreate, db: Session = Depends(get_db), _principal: dict = Depends(require_operator)
+) -> CampaignOut:
     def _load_existing(campaign_id: int) -> Campaign:
         return db.get(Campaign, campaign_id)
 
@@ -68,13 +78,15 @@ def create_campaign(payload: CampaignCreate, db: Session = Depends(get_db)) -> C
 
 
 @router.get("", response_model=list[CampaignOut])
-def list_campaigns(db: Session = Depends(get_db)) -> list[CampaignOut]:
+def list_campaigns(db: Session = Depends(get_db), _principal: dict = Depends(require_auth)) -> list[CampaignOut]:
     campaigns = db.query(Campaign).order_by(Campaign.created_at.desc()).all()
     return [_to_campaign_out(c) for c in campaigns]
 
 
 @router.get("/{campaign_id}", response_model=CampaignOut)
-def get_campaign(campaign_id: int, db: Session = Depends(get_db)) -> CampaignOut:
+def get_campaign(
+    campaign_id: int, db: Session = Depends(get_db), _principal: dict = Depends(require_auth)
+) -> CampaignOut:
     campaign = db.get(Campaign, campaign_id)
     if campaign is None:
         raise HTTPException(status_code=404, detail="Campaign not found")
@@ -82,7 +94,9 @@ def get_campaign(campaign_id: int, db: Session = Depends(get_db)) -> CampaignOut
 
 
 @router.post("/{campaign_id}/score", response_model=CampaignScoreOut)
-def score_campaign(campaign_id: int, db: Session = Depends(get_db)) -> CampaignScoreOut:
+def score_campaign(
+    campaign_id: int, db: Session = Depends(get_db), _principal: dict = Depends(require_operator)
+) -> CampaignScoreOut:
     """Deliberately not idempotency-gated: scoring is a cheap, deterministic
     read-mostly computation (not a paid external call), and ARCHITECTURE.md
     §3 treats re-scoring over time as a legitimate, expected event as

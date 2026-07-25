@@ -1,4 +1,4 @@
-from sqlalchemy import JSON, Enum, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Enum, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from content_factory.db.base import Base
@@ -13,9 +13,19 @@ class HookLibrary(TimestampMixin, Base):
     search deferred" decision) — retrieval in services/content_intelligence.py
     filters by niche/hook_type/score with plain SQL. Adding a pgvector column
     later is an additive migration; nothing here needs to change.
+
+    v1.1 (PHASE1_AUDIT.md F5): the unique constraint on
+    (niche_id, hook_text) is what backs
+    services/content_intelligence.py's safe get-or-create — without it,
+    concurrent calls could silently create duplicate rows for identical
+    text. Per standard SQL NULL semantics, this does *not* dedupe hooks
+    with niche_id IS NULL (each NULL is distinct); every current caller
+    always supplies a niche_id, so this is an accepted, documented gap
+    rather than a silent one.
     """
 
     __tablename__ = "hook_library"
+    __table_args__ = (UniqueConstraint("niche_id", "hook_text", name="uq_hook_library_niche_id_hook_text"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     niche_id: Mapped[int | None] = mapped_column(ForeignKey("niches.id"), nullable=True, index=True)

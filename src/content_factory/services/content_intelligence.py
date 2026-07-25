@@ -16,6 +16,7 @@ from content_factory.db.models.content import ResearchBrief
 from content_factory.db.models.enums import HookSource, PatternConfidenceTier, PatternType, ReviewDecisionType
 from content_factory.db.models.hook import HookLibrary, LearningPattern
 from content_factory.logging_config import get_logger
+from content_factory.services import db_safety
 
 logger = get_logger(__name__)
 
@@ -84,17 +85,30 @@ def find_or_create_hook(
     db: Session, *, niche_id: int | None, hook_text: str, hook_type: str | None = None,
     source: HookSource = HookSource.INTERNAL,
 ) -> HookLibrary:
-    existing = (
-        db.query(HookLibrary)
-        .filter(HookLibrary.niche_id == niche_id, HookLibrary.hook_text == hook_text)
-        .one_or_none()
-    )
-    if existing:
-        return existing
-    hook = HookLibrary(niche_id=niche_id, hook_text=hook_text, hook_type=hook_type, source=source)
-    db.add(hook)
-    db.flush()
-    return hook
+    """Safe upsert (PHASE1_AUDIT.md F5): this is called on essentially
+    every script generation and every metrics submission, making it the
+    more likely of the two known check-then-act races (the other being
+    niche creation) to actually manifest under real concurrent traffic. A
+    unique constraint on `(niche_id, hook_text)` backs this — note that,
+    per standard SQL NULL semantics, two hooks with `niche_id IS NULL` and
+    identical text are *not* considered duplicates by that constraint, so
+    the race is only fully closed for hooks that have a real niche
+    assigned. In practice every current caller always supplies one.
+    """
+
+    def _query() -> HookLibrary | None:
+        return (
+            db.query(HookLibrary)
+            .filter(HookLibrary.niche_id == niche_id, HookLibrary.hook_text == hook_text)
+            .one_or_none()
+        )
+
+    def _create() -> HookLibrary:
+        hook = HookLibrary(niche_id=niche_id, hook_text=hook_text, hook_type=hook_type, source=source)
+        db.add(hook)
+        return hook
+
+    return db_safety.get_or_create(db, query=_query, create=_create)
 
 
 def record_hook_usage(db: Session, *, niche_id: int | None, hook_text: str) -> HookLibrary:

@@ -72,6 +72,7 @@ class ResearchAgent:
                 entity_type="campaign",
                 entity_id=campaign.id,
                 input_summary={"raw_notes_chars": len(raw_notes)},
+                cost_campaign_id=campaign.id,
             ) as handle:
                 response = self._llm.complete(system=_SYSTEM_PROMPT, prompt=prompt, max_tokens=2048)
                 handle.record_output(

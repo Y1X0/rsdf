@@ -13,6 +13,7 @@ dependencies = [
     "psycopg2-binary>=2.9",
     "structlog>=24.1",
     "anthropic>=0.34",
+    "pyjwt>=2.8",
 ]
 
 [project.optional-dependencies]

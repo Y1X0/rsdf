@@ -11,6 +11,20 @@ guarantees, mechanically rather than by convention:
   start, completion, and failure. On failure, the AgentRun row itself is
   marked FAILED with the error message *before* the exception is re-raised
   — nothing here ever swallows an exception.
+
+**v1.1 durability fix (PHASE1_AUDIT.md F1):** the AgentRun row (and, on
+success, its derived CostLedger entry) is committed *immediately* on
+completion or failure — not left flushed-and-pending for the outer
+request's single end-of-request commit. Previously, a request that ran two
+agent_run() calls (e.g. TTS then render) and failed on the second one
+rolled back the *first* call's already-real, already-billed cost record
+too, because nothing had committed it yet. Committing here means a later
+failure in the same request can no longer erase a step that already
+genuinely happened. This does trade the old "one atomic transaction per
+request" guarantee for "durable as of each completed step" — deliberately:
+the old guarantee protected against half-created *data*, but a completed
+AgentRun represents a half-created *fact* (money already spent, or an audit
+record that legally must survive), and those are not the same thing.
 """
 
 import json
@@ -61,7 +75,16 @@ def agent_run(
     entity_type: str | None = None,
     entity_id: int | None = None,
     input_summary: dict | None = None,
+    cost_video_id: int | None = None,
+    cost_campaign_id: int | None = None,
 ) -> Iterator[AgentRunHandle]:
+    """`cost_video_id`/`cost_campaign_id` are optional linkage for the
+    CostLedger entry this call derives on success (see analytics_service
+    .record_agent_run_cost) — passing them here, rather than leaving every
+    caller to remember a separate follow-up call, is what guarantees *every*
+    agent run's cost is ledgered, not just the ones a caller happened to
+    wire up (this was previously missing entirely for the Research and
+    Script agents — see PHASE1_AUDIT.md's cost-tracking gap)."""
     run = AgentRun(
         agent_name=agent_name,
         scope=scope,
@@ -86,13 +109,22 @@ def agent_run(
         run.status = ProcessingStatus.FAILED
         run.error_message = str(exc)
         run.completed_at = datetime.now(UTC)
-        db.flush()
+        db.commit()
         log.error("agent_run_failed", error=str(exc))
         raise
     else:
         run.status = ProcessingStatus.COMPLETED
         run.completed_at = datetime.now(UTC)
-        db.flush()
+
+        # Local import: avoids a module-load-time cycle (services import
+        # from db.models, not from agents), and keeps agents/base.py's
+        # import surface minimal for anything that doesn't hit this path.
+        from content_factory.services import analytics_service
+
+        analytics_service.record_agent_run_cost(
+            db, agent_run=run, video_id=cost_video_id, campaign_id=cost_campaign_id
+        )
+        db.commit()
         log.info("agent_run_completed", cost_usd=float(run.cost_usd or 0), duration_ms=run.duration_ms)
 
 

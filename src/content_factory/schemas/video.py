@@ -1,13 +1,13 @@
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from content_factory.db.models.enums import ProcessingStatus, VideoStatus
 
 
 class RenderRequestBody(BaseModel):
-    template_id: str | None = None
-    idempotency_key: str | None = None
+    template_id: str | None = Field(default=None, max_length=100)
+    idempotency_key: str | None = Field(default=None, max_length=200)
 
 
 class QualityScoreOut(BaseModel):
@@ -37,5 +37,6 @@ class VideoOut(BaseModel):
     contains_ai_voice: bool
     contains_ai_visual: bool
     qc_status: str | None
+    qc_notes: str | None = None
     created_at: datetime
     quality_score: QualityScoreOut | None = None

@@ -25,8 +25,12 @@ class Video(TimestampMixin, Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     script_id: Mapped[int] = mapped_column(ForeignKey("scripts.id"), index=True)
 
+    # v1.1 (PHASE1_AUDIT.md F6): indexed — filtered directly in
+    # list_pending_review's WHERE clause and grouped by in the dashboard
+    # summary; this was a real missing index on a live query path, not a
+    # forward-looking one.
     status: Mapped[VideoStatus] = mapped_column(
-        Enum(VideoStatus, native_enum=False, length=32), default=VideoStatus.DRAFT
+        Enum(VideoStatus, native_enum=False, length=32), default=VideoStatus.DRAFT, index=True
     )
 
     template_id: Mapped[str | None] = mapped_column(String(100), nullable=True)

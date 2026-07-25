@@ -5,14 +5,20 @@ The formula matches §3.1 exactly:
     composite = 0.35*normalized(expected_roi) + 0.25*(1-competition)
               + 0.20*(1-difficulty) + 0.20*niche_fit
 
-Phase 1 has no live competitor-saturation feed or historical CPM data yet,
-so `difficulty`, `competition`, and `niche_fit` are computed from whatever
-is available (campaign rules text, manually-maintained Niche fields) with
-clearly documented neutral defaults when data is missing — never a silent
-guess presented as a confident number. As the Content Intelligence Layer
-(services/content_intelligence.py) and Revenue Optimization data accumulate
-in later phases, these functions are the only things that need to change;
-the composite formula and the CampaignScore schema stay the same.
+Phase 1 has no live competitor-saturation feed or historical CPM data yet.
+**v1.1 (PHASE1_AUDIT.md F3):** `compute_competition_level` and
+`compute_niche_fit_score` used to fall straight to a hardcoded 0.5 the
+moment `Niche.saturation_score`/`trend_score` were unset — and there was no
+API endpoint that could ever set them (see `api/routers/niches.py`, added
+in this release, for the fix to that half of the problem). This half of
+the fix changes what happens when they're *still* unset: instead of a
+silent placeholder, these functions now derive a real signal from actual
+internal data (how many campaigns already compete for this niche's
+production slots; how the niche's own hooks have actually performed) before
+falling back to the neutral default — and `breakdown_json` always records
+which of the three (`manual`, an internal-derivation, or genuine
+`insufficient_data`) produced each number, so nobody mistakes a fallback
+for a real reading.
 """
 
 import math
@@ -21,6 +27,7 @@ from sqlalchemy.orm import Session
 
 from content_factory.db.models.campaign import Campaign, CampaignScore
 from content_factory.db.models.enums import ProcessingStatus
+from content_factory.db.models.hook import HookLibrary
 from content_factory.db.models.niche import Niche
 from content_factory.logging_config import get_logger
 
@@ -31,6 +38,15 @@ logger = get_logger(__name__)
 # ARCHITECTURE.md §18's cost table and §13's view-outcome scenario framing.
 DEFAULT_ASSUMED_COST_PER_VIDEO_USD = 6.0
 DEFAULT_ASSUMED_VIEWS = {"low": 500, "median": 3_000, "high": 15_000}
+
+# How many *other* campaigns already in a niche count as "fully saturated"
+# for the internal-signal fallback, absent a manually-set saturation_score.
+# Illustrative, tunable — this is a proxy for internal production-slot
+# competition, not external market saturation (Phase 1 has no competitor
+# feed to measure that with; see ARCHITECTURE.md §4.1).
+SATURATION_CAMPAIGN_THRESHOLD = 10
+
+DEFAULT_NEUTRAL_SCORE = 0.5
 
 _DIFFICULTY_KEYWORDS = (
     "exclusive",
@@ -60,22 +76,55 @@ def compute_difficulty_score(campaign: Campaign) -> float:
     return round(min(score + length_penalty, 1.0), 3)
 
 
-def compute_competition_level(niche: Niche | None) -> float:
-    """0 (uncontested) .. 1 (saturated). Reads Niche.saturation_score,
-    maintained manually in Phase 1 (populated automatically by competitor
-    tracking in Phase 2, ARCHITECTURE.md §4.1). Defaults to a neutral 0.5
-    when unknown, rather than assuming either extreme."""
+def compute_competition_level(db: Session, *, campaign: Campaign, niche: Niche | None) -> tuple[float, str]:
+    """Returns (score, source). 0 (uncontested) .. 1 (saturated).
+
+    Precedence: an operator's manually-set `Niche.saturation_score` always
+    wins (they know things this system can't measure). Absent that, derive
+    a real signal from how many *other* campaigns already exist in this
+    niche — genuine internal data, not a guess. Only when neither is
+    available does this fall back to the neutral default, and that fallback
+    is always labeled as such in the returned source tag.
+    """
     if niche is not None and niche.saturation_score is not None:
-        return round(max(0.0, min(niche.saturation_score, 1.0)), 3)
-    return 0.5
+        return round(max(0.0, min(niche.saturation_score, 1.0)), 3), "manual"
+
+    if niche is not None:
+        other_campaign_count = (
+            db.query(Campaign)
+            .filter(Campaign.niche_id == niche.id, Campaign.id != campaign.id)
+            .count()
+        )
+        if other_campaign_count > 0:
+            score = min(other_campaign_count / SATURATION_CAMPAIGN_THRESHOLD, 1.0)
+            return round(score, 3), "internal_campaign_count"
+
+    return DEFAULT_NEUTRAL_SCORE, "insufficient_data"
 
 
-def compute_niche_fit_score(niche: Niche | None) -> float:
-    """0 (poor fit) .. 1 (great fit). Reads Niche.trend_score, same
-    Phase 1/Phase 2 provenance note as competition_level."""
+def compute_niche_fit_score(db: Session, *, niche: Niche | None) -> tuple[float, str]:
+    """Returns (score, source). 0 (poor fit) .. 1 (great fit).
+
+    Same precedence as competition_level: manual `Niche.trend_score` wins;
+    absent that, derive a real signal from the average `best_viral_score`
+    of hooks already observed in this niche (real outcome data, when any
+    exists); only then fall back to the neutral default.
+    """
     if niche is not None and niche.trend_score is not None:
-        return round(max(0.0, min(niche.trend_score, 1.0)), 3)
-    return 0.5
+        return round(max(0.0, min(niche.trend_score, 1.0)), 3), "manual"
+
+    if niche is not None:
+        scored_hooks = (
+            db.query(HookLibrary.best_viral_score)
+            .filter(HookLibrary.niche_id == niche.id, HookLibrary.best_viral_score.isnot(None))
+            .all()
+        )
+        scores = [row[0] for row in scored_hooks]
+        if scores:
+            average = sum(scores) / len(scores)
+            return round(max(0.0, min(average, 1.0)), 3), "internal_hook_performance"
+
+    return DEFAULT_NEUTRAL_SCORE, "insufficient_data"
 
 
 def compute_expected_roi(
@@ -101,8 +150,8 @@ def _normalize_roi(roi_median: float, scale: float = 50.0) -> float:
 def score_campaign(db: Session, *, campaign: Campaign) -> CampaignScore:
     niche = campaign.niche
     difficulty = compute_difficulty_score(campaign)
-    competition = compute_competition_level(niche)
-    niche_fit = compute_niche_fit_score(niche)
+    competition, competition_source = compute_competition_level(db, campaign=campaign, niche=niche)
+    niche_fit, niche_fit_source = compute_niche_fit_score(db, niche=niche)
     roi_low, roi_median, roi_high = compute_expected_roi(campaign)
     normalized_roi = _normalize_roi(roi_median)
 
@@ -138,6 +187,8 @@ def score_campaign(db: Session, *, campaign: Campaign) -> CampaignScore:
             "normalized_roi": round(normalized_roi, 4),
             "assumed_cost_per_video_usd": DEFAULT_ASSUMED_COST_PER_VIDEO_USD,
             "assumed_views": DEFAULT_ASSUMED_VIEWS,
+            "competition_source": competition_source,
+            "niche_fit_source": niche_fit_source,
         },
     )
     db.add(score)
@@ -150,5 +201,7 @@ def score_campaign(db: Session, *, campaign: Campaign) -> CampaignScore:
         recommendation=recommendation,
         roi_low=roi_low,
         roi_median=roi_median,
+        competition_source=competition_source,
+        niche_fit_source=niche_fit_source,
     )
     return score

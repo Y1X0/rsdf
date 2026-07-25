@@ -3,9 +3,14 @@ renderer -> Video row. Business logic here depends only on the TTSProvider
 and VideoRenderer interfaces (adjustment #2/#6) — never on ElevenLabs,
 Pillow, ffmpeg, or any other concrete provider. Both external calls are
 wrapped in agents.base.agent_run so they get the same versioning/logging
-guarantees as the Research/Script agents (adjustments #3/#4), and their
-cost is automatically pushed into the Cost Control Layer's ledger via
-analytics_service.record_agent_run_cost.
+guarantees as the Research/Script agents (adjustments #3/#4); passing
+`cost_video_id`/`cost_campaign_id` to agent_run means its CostLedger entry
+and the AgentRun's own COMPLETED/FAILED status commit together, immediately,
+the moment each step finishes — see agents/base.py's v1.1 durability note
+(PHASE1_AUDIT.md F1) for why that matters here specifically: this function
+runs *two* agent_run() calls per video, and the old flush-only behavior let
+a render failure erase the record of an already-successful, already-billed
+TTS call.
 """
 
 from datetime import UTC, datetime
@@ -17,7 +22,7 @@ from content_factory.db.models.content import Script
 from content_factory.db.models.enums import ProcessingStatus, VideoStatus
 from content_factory.db.models.video import Video
 from content_factory.logging_config import get_logger
-from content_factory.services import analytics_service
+from content_factory.services import qc_service
 from content_factory.video_production.captions import build_captions
 from content_factory.video_production.renderer.base import RenderRequest, VideoRenderer
 from content_factory.video_production.tts.base import TTSProvider
@@ -53,6 +58,8 @@ def render_video(
             scope="video.render.tts",
             entity_type="video",
             entity_id=video.id,
+            cost_video_id=video.id,
+            cost_campaign_id=campaign_id,
         ) as tts_handle:
             tts_result = tts_provider.synthesize(text=script.full_text, voice_id=DEFAULT_VOICE_ID)
             tts_handle.record_output(
@@ -64,6 +71,13 @@ def render_video(
                 cost_usd=tts_result.cost_usd,
                 duration_ms=tts_result.duration_ms,
             )
+        # Recorded immediately (not deferred to the end of the function)
+        # so the video row itself reflects which TTS run serviced it even
+        # if a later step (the renderer) fails — otherwise the durability
+        # fix above would preserve the AgentRun/CostLedger rows, but the
+        # Video row would still have no way to point back at them.
+        video.tts_agent_run_id = tts_handle.run.id
+        db.flush()
 
         captions = build_captions(tts_result.word_timings)
 
@@ -73,6 +87,8 @@ def render_video(
             scope="video.render.render",
             entity_type="video",
             entity_id=video.id,
+            cost_video_id=video.id,
+            cost_campaign_id=campaign_id,
         ) as render_handle:
             render_request = RenderRequest(
                 video_id=video.id,
@@ -93,6 +109,8 @@ def render_video(
                 cost_usd=render_result.cost_usd,
                 duration_ms=render_result.duration_ms,
             )
+        video.render_agent_run_id = render_handle.run.id
+        db.flush()
 
         video.asset_url = render_result.asset_url
         video.thumbnail_url = render_result.thumbnail_url
@@ -106,20 +124,23 @@ def render_video(
         video.contains_ai_visual = render_result.provider not in ("null",)
         video.render_status = ProcessingStatus.COMPLETED
         video.render_completed_at = datetime.now(UTC)
-        video.tts_agent_run_id = tts_handle.run.id
-        video.render_agent_run_id = render_handle.run.id
         video.status = VideoStatus.RENDERED
-        video.qc_status = "passed"
+
+        qc_result = qc_service.run_automated_qc(
+            script=script, tts_result=tts_result, render_result=render_result, captions=captions
+        )
+        video.qc_status = "passed" if qc_result.passed else "failed"
+        video.qc_notes = qc_result.notes
         db.flush()
 
-        analytics_service.record_agent_run_cost(
-            db, agent_run=tts_handle.run, video_id=video.id, campaign_id=campaign_id
+        log.info(
+            "production_completed",
+            asset_url=render_result.asset_url,
+            duration_s=render_result.duration_s,
+            qc_status=video.qc_status,
         )
-        analytics_service.record_agent_run_cost(
-            db, agent_run=render_handle.run, video_id=video.id, campaign_id=campaign_id
-        )
-
-        log.info("production_completed", asset_url=render_result.asset_url, duration_s=render_result.duration_s)
+        if not qc_result.passed:
+            log.warning("automated_qc_failed", checks=qc_result.checks, notes=qc_result.notes)
     except Exception:
         video.render_status = ProcessingStatus.FAILED
         video.status = VideoStatus.RENDER_FAILED

@@ -1,18 +1,18 @@
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class MetricsSubmitRequest(BaseModel):
-    views: int
-    avg_watch_time_s: float | None = None
-    completion_rate: float | None = None
-    rewatch_rate: float | None = None
-    shares: int = 0
-    comments: int = 0
-    likes: int = 0
-    saves: int = 0
-    source: str = "manual"
+    views: int = Field(ge=0)
+    avg_watch_time_s: float | None = Field(default=None, ge=0)
+    completion_rate: float | None = Field(default=None, ge=0, le=1)
+    rewatch_rate: float | None = Field(default=None, ge=0, le=1)
+    shares: int = Field(default=0, ge=0)
+    comments: int = Field(default=0, ge=0)
+    likes: int = Field(default=0, ge=0)
+    saves: int = Field(default=0, ge=0)
+    source: str = Field(default="manual", max_length=20)
 
 
 class ViralScoreOut(BaseModel):
@@ -31,19 +31,29 @@ class MetricsResponse(BaseModel):
 
 
 class CostSubmitRequest(BaseModel):
-    category: str
+    category: str = Field(max_length=20)
+    cost_usd: float = Field(ge=0)
+    provider: str | None = Field(default=None, max_length=50)
+    note: str | None = Field(default=None, max_length=300)
+
+
+class CostEntryOut(BaseModel):
+    id: int
     cost_usd: float
-    provider: str | None = None
-    note: str | None = None
 
 
 class RevenueSubmitRequest(BaseModel):
     campaign_id: int
-    raw_views: int | None = None
-    approved_views: int | None = None
-    payout_realized: float = 0.0
-    payout_pending: float = 0.0
-    status: str = "pending"
+    raw_views: int | None = Field(default=None, ge=0)
+    approved_views: int | None = Field(default=None, ge=0)
+    payout_realized: float = Field(default=0.0, ge=0)
+    payout_pending: float = Field(default=0.0, ge=0)
+    status: str = Field(default="pending", max_length=20)
+
+
+class RevenueEntryOut(BaseModel):
+    id: int
+    payout_realized: float
 
 
 class ProfitSummaryOut(BaseModel):

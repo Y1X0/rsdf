@@ -65,6 +65,7 @@ class ScriptAgent:
                 entity_type="content_idea",
                 entity_id=idea.id,
                 input_summary={"num_variants": num_variants, "retrieved_hook_count": len(retrieved_hooks)},
+                cost_campaign_id=idea.campaign_id,
             ) as handle:
                 response = self._llm.complete(system=_SYSTEM_PROMPT, prompt=prompt, max_tokens=3000)
                 handle.record_output(
