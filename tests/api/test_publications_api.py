@@ -109,6 +109,84 @@ def test_publish_disabled_via_kill_switch(client, monkeypatch):
         get_settings.cache_clear()
 
 
+def _publish_and_mark_published(client, video: dict, account: dict) -> dict:
+    """Manual provider never actually publishes (stays 'scheduled') — force
+    a genuinely 'published' Publication by monkeypatching the provider
+    factory the router uses, the same technique test_durability_regression
+    .py already established for overriding a service's collaborator."""
+    from content_factory.api.routers import publications as publications_router
+    from content_factory.publishing.base import PublishResult
+
+    class _FakePublishedProvider:
+        def publish(self, request):
+            return PublishResult(provider="fake", published=True, external_post_id="ext-123")
+
+    original_factory = publications_router.get_publishing_provider
+    publications_router.get_publishing_provider = lambda *a, **k: _FakePublishedProvider()
+    try:
+        return client.post(
+            f"/videos/{video['id']}/publish",
+            json={"account_id": account["id"], "title": "t", "description": "d"},
+        ).json()
+    finally:
+        publications_router.get_publishing_provider = original_factory
+
+
+def test_sync_metrics_rejects_publication_not_yet_published(client):
+    video = _create_approved_video(client)
+    account = _create_account(client)
+    publication = client.post(
+        f"/videos/{video['id']}/publish", json={"account_id": account["id"], "title": "t", "description": "d"}
+    ).json()
+    assert publication["status"] == "scheduled"
+
+    resp = client.post(f"/publications/{publication['id']}/metrics/sync")
+    assert resp.status_code == 409
+
+
+def test_sync_metrics_returns_501_when_no_automated_provider_configured(client):
+    video = _create_approved_video(client)
+    account = _create_account(client)
+    publication = _publish_and_mark_published(client, video, account)
+    assert publication["status"] == "published"
+
+    resp = client.post(f"/publications/{publication['id']}/metrics/sync")
+    assert resp.status_code == 501
+
+
+def test_sync_metrics_success_feeds_existing_analytics_service(client):
+    from content_factory.analytics_ingestion.base import AnalyticsFetchResult
+    from content_factory.api.routers import publications as publications_router
+
+    video = _create_approved_video(client)
+    account = _create_account(client)
+    publication = _publish_and_mark_published(client, video, account)
+
+    class _FakeAnalyticsProvider:
+        def fetch_metrics(self, *, external_post_id):
+            return AnalyticsFetchResult(views=1234, likes=56, comments=7, shares=8, saves=9)
+
+    original_factory = publications_router.get_analytics_provider
+    publications_router.get_analytics_provider = lambda *a, **k: _FakeAnalyticsProvider()
+    try:
+        resp = client.post(f"/publications/{publication['id']}/metrics/sync")
+    finally:
+        publications_router.get_analytics_provider = original_factory
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["video_id"] == video["id"]
+    assert body["views"] == 1234
+    assert 0 <= body["viral_score"]["score"] <= 1
+
+    # The existing manual endpoint must remain completely unaffected —
+    # both paths write through the same analytics_service, but manual
+    # entry is still available and untouched.
+    manual_resp = client.post(f"/videos/{video['id']}/metrics", json={"views": 999})
+    assert manual_resp.status_code == 200
+    assert manual_resp.json()["views"] == 999
+
+
 def test_list_and_get_publication(client):
     video = _create_approved_video(client)
     account = _create_account(client)
