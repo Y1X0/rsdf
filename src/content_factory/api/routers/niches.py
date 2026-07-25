@@ -11,7 +11,9 @@ from sqlalchemy.orm import Session
 from content_factory.api.deps import get_db
 from content_factory.auth.dependencies import require_auth, require_operator
 from content_factory.db.models.niche import Niche
+from content_factory.schemas.analytics import ProfitSummaryOut
 from content_factory.schemas.niche import NicheCreate, NicheOut, NicheUpdate
+from content_factory.services import analytics_service
 
 router = APIRouter(prefix="/niches", tags=["niches"])
 
@@ -74,3 +76,15 @@ def update_niche(
     db.flush()
 
     return NicheOut.model_validate(niche)
+
+
+@router.get("/{niche_id}/profit", response_model=ProfitSummaryOut)
+def get_niche_profit(
+    niche_id: int, db: Session = Depends(get_db), _principal: dict = Depends(require_auth)
+) -> ProfitSummaryOut:
+    """ARCHITECTURE.md §9's per-niche profit rollup (Phase 2 M6)."""
+    niche = db.get(Niche, niche_id)
+    if niche is None:
+        raise HTTPException(status_code=404, detail="Niche not found")
+    summary = analytics_service.compute_niche_profit_summary(db, niche_id=niche_id)
+    return ProfitSummaryOut(**summary)

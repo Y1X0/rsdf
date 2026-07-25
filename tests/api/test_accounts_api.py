@@ -144,3 +144,35 @@ def test_non_operator_cannot_create_account(client):
         headers={"Authorization": f"Bearer {viewer_token}"},
     )
     assert resp.status_code == 403
+
+
+def test_account_profit_rollup_aggregates_videos_published_to_it(client):
+    """Phase 2 M6: profit-per-account rolls up cost/revenue across every
+    video that has been (or is scheduled to be) published to that
+    account — via the publications table, not campaigns."""
+    account = _create_account(client)
+
+    campaign = client.post("/campaigns", json={"brand_name": "Acme", "cpm_rate": 3.0}).json()
+    idea = client.post(f"/campaigns/{campaign['id']}/ideas", json={"concept_summary": "idea"}).json()
+    scripts = client.post(f"/ideas/{idea['id']}/scripts", json={"num_variants": 1}).json()
+    video = client.post(f"/scripts/{scripts[0]['id']}/render", json={}).json()
+    client.post(f"/videos/{video['id']}/review", json={"reviewer_id": "bob", "decision": "approved"})
+    client.post(f"/videos/{video['id']}/publish", json={"account_id": account["id"], "title": "t", "description": "d"})
+
+    client.post(f"/videos/{video['id']}/cost", json={"category": "human_review", "cost_usd": 3.0})
+    client.post(
+        f"/videos/{video['id']}/revenue",
+        json={"campaign_id": campaign["id"], "approved_views": 500, "payout_realized": 15.0},
+    )
+
+    resp = client.get(f"/accounts/{account['id']}/profit")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total_revenue_usd"] == 15.0
+    assert body["total_cost_usd"] >= 3.0
+    assert body["profit_usd"] == body["total_revenue_usd"] - body["total_cost_usd"]
+
+
+def test_account_profit_missing_account_returns_404(client):
+    resp = client.get("/accounts/999/profit")
+    assert resp.status_code == 404

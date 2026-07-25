@@ -63,9 +63,16 @@ def submit_cost(
     video = db.get(Video, video_id)
     if video is None:
         raise HTTPException(status_code=404, detail="Video not found")
+    # Phase 2 M6: derived (not client-supplied) so niche/account profit
+    # rollups (services/analytics_service.compute_niche_profit_summary) can
+    # attribute manually-entered costs correctly — previously this was
+    # always left null, which the single-video profit summary never
+    # noticed since it filters by video_id directly.
+    campaign_id = video.script.idea.campaign_id if video.script and video.script.idea else None
     entry = analytics_service.record_manual_cost(
         db,
         video_id=video_id,
+        campaign_id=campaign_id,
         category=payload.category,
         cost_usd=payload.cost_usd,
         provider=payload.provider,

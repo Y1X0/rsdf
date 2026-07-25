@@ -7,6 +7,7 @@ from content_factory.db.models.analytics import CostLedger, MetricsSnapshot, Rev
 from content_factory.db.models.budget import BudgetCeiling, ProviderQuotaUsage
 from content_factory.db.models.campaign import Campaign, CampaignScore
 from content_factory.db.models.content import ContentIdea, ResearchBrief, Script
+from content_factory.db.models.experiment import Experiment, ExperimentResult
 from content_factory.db.models.hook import HookLibrary, LearningPattern
 from content_factory.db.models.idempotency import IdempotencyRecord
 from content_factory.db.models.niche import Niche
@@ -24,6 +25,8 @@ __all__ = [
     "CampaignScore",
     "ContentIdea",
     "CostLedger",
+    "Experiment",
+    "ExperimentResult",
     "HookLibrary",
     "IdempotencyRecord",
     "LearningPattern",

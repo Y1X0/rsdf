@@ -71,6 +71,38 @@ def test_campaign_scoring_derives_competition_from_internal_campaign_count(clien
     assert score["competition_level"] == 0.3  # 3 other campaigns / threshold of 10
 
 
+def test_niche_profit_rollup_aggregates_across_its_campaigns(client):
+    """Phase 2 M6: profit-per-niche rolls up cost_ledger/revenue_snapshots
+    across every campaign in the niche, not just one video."""
+    niche = client.post("/niches", json={"name": "profit_niche"}).json()
+    campaign = client.post(
+        "/campaigns", json={"brand_name": "Acme", "niche_name": "profit_niche", "cpm_rate": 3.0}
+    ).json()
+    assert campaign["niche_id"] == niche["id"]
+
+    idea = client.post(f"/campaigns/{campaign['id']}/ideas", json={"concept_summary": "idea"}).json()
+    scripts = client.post(f"/ideas/{idea['id']}/scripts", json={"num_variants": 1}).json()
+    video = client.post(f"/scripts/{scripts[0]['id']}/render", json={}).json()
+
+    client.post(f"/videos/{video['id']}/cost", json={"category": "human_review", "cost_usd": 2.0})
+    client.post(
+        f"/videos/{video['id']}/revenue",
+        json={"campaign_id": campaign["id"], "approved_views": 1000, "payout_realized": 10.0},
+    )
+
+    resp = client.get(f"/niches/{niche['id']}/profit")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total_revenue_usd"] == 10.0
+    assert body["total_cost_usd"] >= 2.0
+    assert body["profit_usd"] == body["total_revenue_usd"] - body["total_cost_usd"]
+
+
+def test_niche_profit_missing_niche_returns_404(client):
+    resp = client.get("/niches/999/profit")
+    assert resp.status_code == 404
+
+
 def test_campaign_scoring_falls_back_to_neutral_only_when_truly_no_data(client):
     campaign = client.post(
         "/campaigns", json={"brand_name": "Solo", "niche_name": "brand_new_empty_niche", "cpm_rate": 2.0}

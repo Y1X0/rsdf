@@ -24,7 +24,8 @@ from content_factory.schemas.account import (
     OwnedAccountOut,
     OwnedAccountUpdate,
 )
-from content_factory.services import account_service, token_encryption
+from content_factory.schemas.analytics import ProfitSummaryOut
+from content_factory.services import account_service, analytics_service, token_encryption
 from content_factory.services.token_encryption import TokenEncryptionNotConfigured
 
 router = APIRouter(prefix="/accounts", tags=["accounts"])
@@ -145,3 +146,15 @@ def run_health_check(
         api_error_rate=payload.api_error_rate,
     )
     return AccountHealthSnapshotOut.model_validate(snapshot)
+
+
+@router.get("/{account_id}/profit", response_model=ProfitSummaryOut)
+def get_account_profit(
+    account_id: int, db: Session = Depends(get_db), _principal: dict = Depends(require_auth)
+) -> ProfitSummaryOut:
+    """ARCHITECTURE.md §9's per-account profit rollup (Phase 2 M6)."""
+    account = db.get(OwnedAccount, account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail="Account not found")
+    summary = analytics_service.compute_account_profit_summary(db, account_id=account_id)
+    return ProfitSummaryOut(**summary)

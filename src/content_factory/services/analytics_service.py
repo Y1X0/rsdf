@@ -16,6 +16,7 @@ from content_factory.db.models.agent_run import AgentRun
 from content_factory.db.models.analytics import CostLedger, MetricsSnapshot, RevenueSnapshot, ViralScoreRecord
 from content_factory.db.models.campaign import Campaign
 from content_factory.db.models.enums import VideoStatus
+from content_factory.db.models.publication import Publication
 from content_factory.db.models.video import Video
 from content_factory.logging_config import get_logger
 from content_factory.services import content_intelligence
@@ -233,6 +234,59 @@ def compute_profit_summary(db: Session, *, video_id: int) -> dict:
     total_revenue = db.query(func.coalesce(func.sum(RevenueSnapshot.payout_realized), 0)).filter(
         RevenueSnapshot.video_id == video_id
     ).scalar()
+    total_cost = float(total_cost)
+    total_revenue = float(total_revenue)
+    return {
+        "total_cost_usd": total_cost,
+        "total_revenue_usd": total_revenue,
+        "profit_usd": round(total_revenue - total_cost, 4),
+    }
+
+
+def compute_niche_profit_summary(db: Session, *, niche_id: int) -> dict:
+    """ARCHITECTURE.md §9's "profit per niche" rollup — same aggregation
+    shape as compute_profit_summary, joined through Campaign.niche_id since
+    both CostLedger and RevenueSnapshot carry campaign_id directly."""
+    total_cost = (
+        db.query(func.coalesce(func.sum(CostLedger.cost_usd), 0))
+        .join(Campaign, CostLedger.campaign_id == Campaign.id)
+        .filter(Campaign.niche_id == niche_id)
+        .scalar()
+    )
+    total_revenue = (
+        db.query(func.coalesce(func.sum(RevenueSnapshot.payout_realized), 0))
+        .join(Campaign, RevenueSnapshot.campaign_id == Campaign.id)
+        .filter(Campaign.niche_id == niche_id)
+        .scalar()
+    )
+    total_cost = float(total_cost)
+    total_revenue = float(total_revenue)
+    return {
+        "total_cost_usd": total_cost,
+        "total_revenue_usd": total_revenue,
+        "profit_usd": round(total_revenue - total_cost, 4),
+    }
+
+
+def compute_account_profit_summary(db: Session, *, account_id: int) -> dict:
+    """ARCHITECTURE.md §9's "profit per account" rollup. Accounts have no
+    direct cost/revenue link — only through the videos published to them
+    (Publication.video_id, Phase 2 M4) — so this joins through publications
+    rather than campaigns."""
+    published_video_ids = (
+        db.query(Publication.video_id).filter(Publication.account_id == account_id).scalar_subquery()
+    )
+
+    total_cost = (
+        db.query(func.coalesce(func.sum(CostLedger.cost_usd), 0))
+        .filter(CostLedger.video_id.in_(published_video_ids))
+        .scalar()
+    )
+    total_revenue = (
+        db.query(func.coalesce(func.sum(RevenueSnapshot.payout_realized), 0))
+        .filter(RevenueSnapshot.video_id.in_(published_video_ids))
+        .scalar()
+    )
     total_cost = float(total_cost)
     total_revenue = float(total_revenue)
     return {
