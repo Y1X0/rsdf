@@ -19,9 +19,10 @@ from content_factory.api.deps import (
 )
 from content_factory.api.serializers import to_video_out
 from content_factory.auth.dependencies import require_auth, require_operator
+from content_factory.config import get_settings
 from content_factory.db.models.campaign import Campaign
 from content_factory.db.models.content import ContentIdea, ResearchBrief, Script
-from content_factory.db.models.enums import VideoStatus
+from content_factory.db.models.enums import ReviewDecisionType, VideoStatus
 from content_factory.db.models.video import Video
 from content_factory.llm.base import LLMClient
 from content_factory.logging_config import get_logger
@@ -42,6 +43,7 @@ from content_factory.services import (
     idempotency,
     production_service,
     quality_scoring,
+    review_service,
 )
 from content_factory.video_production.renderer.base import VideoRenderer
 from content_factory.video_production.tts.base import TTSProvider
@@ -238,8 +240,23 @@ def render_script(
             video_renderer=video_renderer,
             template_id=payload.template_id or production_service.DEFAULT_TEMPLATE_ID,
         )
-        quality_scoring.score_video(db, video=video, script=script, campaign=campaign, niche_id=campaign.niche_id)
-        video.status = VideoStatus.PENDING_REVIEW
+        quality = quality_scoring.score_video(
+            db, video=video, script=script, campaign=campaign, niche_id=campaign.niche_id
+        )
+
+        settings = get_settings()
+        reject_reason = quality_scoring.determine_auto_reject_reason(quality, settings)
+        if reject_reason is not None:
+            review_service.submit_review(
+                db,
+                video=video,
+                reviewer_id="system:quality_gate",
+                decision=ReviewDecisionType.REJECTED,
+                reason_code=reject_reason,
+                notes="Auto-rejected by the quality gate (Phase 2 M2).",
+            )
+        else:
+            video.status = VideoStatus.PENDING_REVIEW
         db.flush()
         return video
 

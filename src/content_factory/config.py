@@ -60,6 +60,15 @@ class Settings(BaseSettings):
     smtp_from_addr: str = ""
     smtp_to_addr: str = ""
 
+    # --- Quality gating (Phase 2 M2) ---
+    # Opt-in, disabled by default: originality_score/policy_risk_score both
+    # range 0..100, so a floor of 0 (score can never be < 0) and a ceiling
+    # of 100 (score can never be > 100) mean neither threshold can ever
+    # trigger until an operator deliberately tightens them — preserving
+    # Phase 1's "quality scores are informational only" behavior exactly.
+    quality_originality_auto_reject_floor: float = 0.0
+    quality_policy_risk_auto_reject_ceiling: float = 100.0
+
     def resolved_llm_provider(self) -> str:
         """Fall back to the fake provider if no key is configured, regardless
         of what LLM_PROVIDER says — prevents the app crashing on missing

@@ -39,4 +39,6 @@ class NicheOut(BaseModel):
     saturation_score: float | None = None
     avg_cpm_est: float | None = None
     trend_score: float | None = None
+    # Phase 2 M6 (Experimentation Engine) writes this; null until then.
+    allocation_weight: float | None = None
     created_at: datetime

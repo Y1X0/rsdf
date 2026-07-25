@@ -1,7 +1,9 @@
+from content_factory.config import Settings
 from content_factory.db.models.campaign import Campaign
 from content_factory.db.models.content import ContentIdea, Script
 from content_factory.db.models.enums import ProcessingStatus
 from content_factory.db.models.niche import Niche
+from content_factory.db.models.quality import QualityScore
 from content_factory.services import quality_scoring
 
 
@@ -79,3 +81,32 @@ def test_score_video_persists_quality_score_row(db_session):
     assert quality.originality_score == 100.0
     assert quality.retention_prediction_score is None
     assert quality.monetization_probability_score is None
+
+
+def test_auto_reject_disabled_by_default_preserves_phase1_behavior():
+    """Phase 2 M2: with the default floor=0/ceiling=100, no real score can
+    ever breach either threshold — Phase 1's "informational only" behavior
+    must be unchanged unless an operator opts in."""
+    settings = Settings()
+    quality = QualityScore(video_id=1, originality_score=0.0, policy_risk_score=100.0)
+    assert quality_scoring.determine_auto_reject_reason(quality, settings) is None
+
+
+def test_auto_reject_fires_when_originality_floor_is_configured():
+    settings = Settings(quality_originality_auto_reject_floor=30.0)
+    quality = QualityScore(video_id=1, originality_score=10.0, policy_risk_score=0.0)
+    reason = quality_scoring.determine_auto_reject_reason(quality, settings)
+    assert reason == "auto_reject:originality_below_floor"
+
+
+def test_auto_reject_fires_when_policy_risk_ceiling_is_configured():
+    settings = Settings(quality_policy_risk_auto_reject_ceiling=20.0)
+    quality = QualityScore(video_id=1, originality_score=100.0, policy_risk_score=50.0)
+    reason = quality_scoring.determine_auto_reject_reason(quality, settings)
+    assert reason == "auto_reject:policy_risk_above_ceiling"
+
+
+def test_auto_reject_does_not_fire_when_scores_are_within_configured_thresholds():
+    settings = Settings(quality_originality_auto_reject_floor=30.0, quality_policy_risk_auto_reject_ceiling=20.0)
+    quality = QualityScore(video_id=1, originality_score=90.0, policy_risk_score=5.0)
+    assert quality_scoring.determine_auto_reject_reason(quality, settings) is None

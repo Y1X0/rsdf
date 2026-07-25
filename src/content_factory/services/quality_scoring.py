@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
 
+from content_factory.config import Settings
 from content_factory.db.models.campaign import Campaign
 from content_factory.db.models.content import ContentIdea, Script
 from content_factory.db.models.hook import HookLibrary
@@ -114,3 +115,23 @@ def score_video(
         policy_risk_score=policy_risk,
     )
     return quality
+
+
+def determine_auto_reject_reason(quality: QualityScore, settings: Settings) -> str | None:
+    """Phase 2 M2 threshold gating. Opt-in and disabled by default (see
+    config.py's Settings docstring): with the default floor/ceiling, neither
+    branch below can ever be true, so Phase 1's "informational only"
+    behavior is preserved exactly until an operator sets real thresholds.
+
+    Returns a reason_code (reused as-is by review_service.submit_review and
+    content_intelligence.record_review_pattern's known-bad-pattern feedback
+    loop) or None if the video should proceed to normal human review.
+    """
+    if quality.originality_score is not None and quality.originality_score < settings.quality_originality_auto_reject_floor:
+        return "auto_reject:originality_below_floor"
+    if (
+        quality.policy_risk_score is not None
+        and quality.policy_risk_score > settings.quality_policy_risk_auto_reject_ceiling
+    ):
+        return "auto_reject:policy_risk_above_ceiling"
+    return None

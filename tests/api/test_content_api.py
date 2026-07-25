@@ -71,6 +71,38 @@ def test_full_pipeline_idea_to_script_to_render_to_review(client):
     assert final_video["status"] == "approved"
 
 
+def test_render_auto_rejects_when_quality_gate_is_configured(client, monkeypatch):
+    """Phase 2 M2: with the auto-reject floor deliberately set above the
+    maximum possible score (100), every render is guaranteed to breach it —
+    the video should transition straight to 'rejected' and produce a
+    system-authored ReviewDecision, instead of landing in pending_review."""
+    from content_factory.config import get_settings
+
+    monkeypatch.setenv("QUALITY_ORIGINALITY_AUTO_REJECT_FLOOR", "101")
+    get_settings.cache_clear()
+    try:
+        campaign = _create_campaign(client)
+        idea = client.post(f"/campaigns/{campaign['id']}/ideas", json={"concept_summary": "idea"}).json()
+        scripts = client.post(f"/ideas/{idea['id']}/scripts", json={"num_variants": 1}).json()
+        video = client.post(f"/scripts/{scripts[0]['id']}/render", json={}).json()
+
+        assert video["status"] == "rejected"
+
+        from content_factory.db.models.review import ReviewDecision
+
+        db = client.db_session_factory()
+        try:
+            decisions = db.query(ReviewDecision).filter(ReviewDecision.video_id == video["id"]).all()
+            assert len(decisions) == 1
+            assert decisions[0].reviewer_id == "system:quality_gate"
+            assert decisions[0].decision.value == "rejected"
+            assert decisions[0].reason_code == "auto_reject:originality_below_floor"
+        finally:
+            db.close()
+    finally:
+        get_settings.cache_clear()
+
+
 def test_script_generation_is_idempotent(client):
     campaign = _create_campaign(client)
     idea = client.post(f"/campaigns/{campaign['id']}/ideas", json={"concept_summary": "idea"}).json()

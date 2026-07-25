@@ -24,5 +24,11 @@ class Niche(TimestampMixin, Base):
     avg_cpm_est: Mapped[float | None] = mapped_column(Float, nullable=True)
     trend_score: Mapped[float | None] = mapped_column(Float, nullable=True)
 
+    # Phase 2 M6 (Experimentation Engine's niche axis) writes this; null
+    # means "not yet computed, treat as equal split" — added in M2's
+    # migration since it's a trivial additive column with no behavior
+    # depending on it yet.
+    allocation_weight: Mapped[float | None] = mapped_column(Float, nullable=True)
+
     def __repr__(self) -> str:  # pragma: no cover - debug convenience
         return f"Niche(id={self.id}, name={self.name!r})"
