@@ -120,6 +120,44 @@ class Settings(BaseSettings):
         path.mkdir(parents=True, exist_ok=True)
         return path
 
+    def validate_production_safety(self) -> None:
+        """Production Hardening Sprint H1 — closes a real, previously-silent
+        gap: `environment` existed as a field but nothing ever read it, so
+        an operator who forgot to set `DATABASE_URL` in production got a
+        fully-working app quietly running on local SQLite (data loss on the
+        next container restart/redeploy) with no error, no warning, nothing.
+        Called once at app startup (see api/main.py's `create_app`), never
+        on the request path — this is a boot-time check, not a per-request
+        one, and deliberately does nothing at all unless
+        `ENVIRONMENT=production` is explicitly set, so every existing
+        dev/test code path (`environment` defaults to `"development"`) is
+        completely unaffected.
+        """
+        if self.environment != "production":
+            return
+
+        problems = []
+        if self.database_url.startswith("sqlite"):
+            problems.append(
+                "DATABASE_URL points at SQLite while ENVIRONMENT=production. "
+                "SQLite is a supported fallback for local dev/tests only — a real "
+                "deployment needs a real Postgres instance with backups (see "
+                "docs/DATABASE_OPERATIONS.md)."
+            )
+        if not self.jwt_secret_key:
+            problems.append("JWT_SECRET_KEY is unset while ENVIRONMENT=production.")
+        elif len(self.jwt_secret_key) < 32:
+            problems.append(
+                f"JWT_SECRET_KEY is only {len(self.jwt_secret_key)} characters while "
+                "ENVIRONMENT=production; use at least 32 (e.g. "
+                "`python -c \"import secrets; print(secrets.token_urlsafe(48))\"`)."
+            )
+
+        if problems:
+            raise RuntimeError(
+                "Refusing to start with ENVIRONMENT=production: " + " ".join(problems)
+            )
+
 
 @lru_cache
 def get_settings() -> Settings:

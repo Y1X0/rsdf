@@ -15,6 +15,7 @@ from content_factory.api.routers import (
     publications,
     review,
 )
+from content_factory.config import get_settings
 from content_factory.db.base import engine
 from content_factory.logging_config import configure_logging, get_logger
 from content_factory.services.budget_governor import BudgetExceeded
@@ -25,10 +26,15 @@ logger = get_logger(__name__)
 
 def create_app() -> FastAPI:
     configure_logging()
+    # Production Hardening Sprint H1: boot-time fail-closed check — see
+    # Settings.validate_production_safety's own docstring for why this
+    # exists. A no-op unless ENVIRONMENT=production is explicitly set.
+    get_settings().validate_production_safety()
+
     app = FastAPI(
-        title="AI Content Factory — Phase 1 MVP",
+        title="AI Content Factory",
         description="Whop Content Rewards content pipeline. See docs/ARCHITECTURE.md and docs/PHASE1.md.",
-        version="1.1.0",
+        version="2.0.0",
     )
 
     app.include_router(auth.router)

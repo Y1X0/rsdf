@@ -1,0 +1,97 @@
+# Local production-like environment (Production Hardening Sprint H1).
+#
+# Mirrors the real production topology this system is meant to run under:
+# the app talking to a real Postgres instance and a real Redis instance
+# (not the SQLite/in-process fallbacks those two only exist for local
+# dev/tests), with migrations run as an explicit one-off step rather than
+# implicitly on app startup — see docker-entrypoint.sh's comment and
+# docs/DEPLOYMENT.md for the full rationale and sequence.
+#
+# Usage:
+#   cp .env.example .env               # fill in real secrets
+#   docker compose build
+#   docker compose run --rm migrate    # apply migrations once
+#   docker compose up -d app
+#
+# This is NOT a substitute for a real managed Postgres in actual
+# production (see docs/DATABASE_OPERATIONS.md) — it exists so a developer
+# or CI can exercise the exact same container image, migration path, and
+# multi-service topology (app + Postgres + Redis) locally before deploying.
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: content_factory
+      POSTGRES_PASSWORD: content_factory
+      POSTGRES_DB: content_factory
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U content_factory"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # One-off migration runner — `docker compose run --rm migrate`, never
+  # started automatically by `docker compose up`. Deliberately its own
+  # service (not `docker compose exec app ...`) so it works identically
+  # whether or not the `app` service is currently running.
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["migrate"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+psycopg2://content_factory:content_factory@postgres:5432/content_factory
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles: ["tools"]
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+psycopg2://content_factory:content_factory@postgres:5432/content_factory
+      RATE_LIMIT_BACKEND: redis
+      REDIS_URL: redis://redis:6379/0
+      MEDIA_STORAGE_DIR: /app/var/media
+      WEB_CONCURRENCY: "2"
+    ports:
+      - "8000:8000"
+    volumes:
+      - media_data:/app/var/media
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  redis_data:
+  media_data:

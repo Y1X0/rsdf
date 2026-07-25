@@ -10,10 +10,8 @@ gets a real relational database. Adding a native Postgres-only optimization
 later (e.g. JSONB, pgvector) is an additive migration, not a rewrite.
 """
 
-from collections.abc import Generator
-
 from sqlalchemy import create_engine
-from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from content_factory.config import get_settings
 
@@ -27,16 +25,27 @@ def _make_engine():
     connect_args = {}
     if settings.database_url.startswith("sqlite"):
         connect_args["check_same_thread"] = False
-    return create_engine(settings.database_url, connect_args=connect_args, future=True)
+    return create_engine(
+        settings.database_url,
+        connect_args=connect_args,
+        future=True,
+        # Production Hardening Sprint H1: cheap, high-value fix — without
+        # this, a connection that went stale while idle in the pool (DB
+        # restart, managed-Postgres failover, a load balancer's idle
+        # timeout) surfaces as a mid-request error instead of being
+        # transparently recycled. A no-op extra round-trip on SQLite/in
+        # normal operation, real protection the moment a connection
+        # actually goes bad.
+        pool_pre_ping=True,
+    )
 
 
 engine = _make_engine()
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 
-
-def get_db() -> Generator[Session, None, None]:
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+# NOTE: the request-scoped session dependency lives in api/deps.py::get_db,
+# not here — that one has the commit-on-success/rollback-on-error semantics
+# every route actually needs. A duplicate, commit-less version used to live
+# in this module too (dead code, never imported anywhere) and was removed
+# during the Production Hardening Sprint specifically because its identical
+# name made it a plausible, silent footgun for a future import mistake.
