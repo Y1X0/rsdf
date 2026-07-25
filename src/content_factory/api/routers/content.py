@@ -10,7 +10,13 @@ from sqlalchemy.orm import Session
 
 from content_factory.agents.research_agent import ResearchAgent
 from content_factory.agents.script_agent import ScriptAgent
-from content_factory.api.deps import get_db, get_llm_client, get_tts_provider, get_video_renderer
+from content_factory.api.deps import (
+    get_db,
+    get_llm_client,
+    get_notification_provider,
+    get_tts_provider,
+    get_video_renderer,
+)
 from content_factory.api.serializers import to_video_out
 from content_factory.auth.dependencies import require_auth, require_operator
 from content_factory.db.models.campaign import Campaign
@@ -19,6 +25,7 @@ from content_factory.db.models.enums import VideoStatus
 from content_factory.db.models.video import Video
 from content_factory.llm.base import LLMClient
 from content_factory.logging_config import get_logger
+from content_factory.notifications.base import NotificationProvider
 from content_factory.schemas.content import (
     ContentIdeaCreate,
     ContentIdeaOut,
@@ -29,7 +36,13 @@ from content_factory.schemas.content import (
 )
 from content_factory.schemas.hook import HookOut, LearningPatternOut
 from content_factory.schemas.video import RenderRequestBody, VideoOut
-from content_factory.services import content_intelligence, idempotency, production_service, quality_scoring
+from content_factory.services import (
+    budget_governor,
+    content_intelligence,
+    idempotency,
+    production_service,
+    quality_scoring,
+)
 from content_factory.video_production.renderer.base import VideoRenderer
 from content_factory.video_production.tts.base import TTSProvider
 
@@ -43,11 +56,14 @@ def run_research(
     payload: ResearchRequest,
     db: Session = Depends(get_db),
     llm_client: LLMClient = Depends(get_llm_client),
+    notification_provider: NotificationProvider = Depends(get_notification_provider),
     _principal: dict = Depends(require_operator),
 ) -> ResearchBriefOut:
     campaign = db.get(Campaign, campaign_id)
     if campaign is None:
         raise HTTPException(status_code=404, detail="Campaign not found")
+
+    budget_governor.enforce_budget(db, niche_id=campaign.niche_id, notification_provider=notification_provider)
 
     def _load_existing(brief_id: int) -> ResearchBrief:
         return db.get(ResearchBrief, brief_id)
@@ -135,12 +151,15 @@ def generate_scripts(
     payload: ScriptGenerateRequest,
     db: Session = Depends(get_db),
     llm_client: LLMClient = Depends(get_llm_client),
+    notification_provider: NotificationProvider = Depends(get_notification_provider),
     _principal: dict = Depends(require_operator),
 ) -> list[ScriptOut]:
     idea = db.get(ContentIdea, idea_id)
     if idea is None:
         raise HTTPException(status_code=404, detail="Content idea not found")
     niche_id = idea.campaign.niche_id if idea.campaign else None
+
+    budget_governor.enforce_budget(db, niche_id=niche_id, notification_provider=notification_provider)
 
     def _load_existing(anchor_id: int) -> _ScriptBatchAnchor:
         scripts = db.query(Script).filter(Script.idea_id == anchor_id).order_by(Script.id).all()
@@ -191,12 +210,17 @@ def render_script(
     db: Session = Depends(get_db),
     tts_provider: TTSProvider = Depends(get_tts_provider),
     video_renderer: VideoRenderer = Depends(get_video_renderer),
+    notification_provider: NotificationProvider = Depends(get_notification_provider),
     _principal: dict = Depends(require_operator),
 ) -> VideoOut:
     script = db.get(Script, script_id)
     if script is None:
         raise HTTPException(status_code=404, detail="Script not found")
     campaign = script.idea.campaign
+
+    budget_governor.enforce_budget(
+        db, niche_id=campaign.niche_id if campaign else None, notification_provider=notification_provider
+    )
 
     def _load_existing(video_id: int) -> Video:
         return db.get(Video, video_id)

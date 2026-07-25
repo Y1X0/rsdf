@@ -33,10 +33,27 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 import content_factory.db.models  # noqa: F401 - registers all tables on Base.metadata
+from content_factory.auth.rate_limiter import FixedWindowRateLimiter
 from content_factory.db.base import Base
 from content_factory.llm.providers.fake_provider import FakeLLMClient
+from content_factory.notifications.base import NotificationProvider, NotificationResult
 from content_factory.video_production.renderer.providers.null_renderer import NullRenderer
 from content_factory.video_production.tts.providers.silent_provider import SilentTTSProvider
+
+
+class FakeNotificationProvider(NotificationProvider):
+    """Records every notification in-memory instead of sending anywhere —
+    lets tests assert an alert fired without touching Slack/SMTP/logging."""
+
+    def __init__(self) -> None:
+        self.sent: list = []
+
+    def send(self, request) -> NotificationResult:
+        self.sent.append(request)
+        # "log" (a real NotificationChannel value), not an arbitrary string:
+        # NotificationLog.channel is a validated Enum column, so persisting
+        # an unrecognized value would raise a LookupError on the next read.
+        return NotificationResult(channel="log", delivered=True)
 
 
 def _make_sqlite_engine():
@@ -125,7 +142,12 @@ def null_video_renderer(tmp_media_dir) -> NullRenderer:
     return NullRenderer(storage_dir=tmp_media_dir / "video")
 
 
-def _build_test_client(fake_llm_client, silent_tts_provider, null_video_renderer):
+@pytest.fixture()
+def fake_notification_provider() -> FakeNotificationProvider:
+    return FakeNotificationProvider()
+
+
+def _build_test_client(fake_llm_client, silent_tts_provider, null_video_renderer, fake_notification_provider=None):
     """Shared setup for both the authenticated and unauthenticated test
     clients: an isolated in-memory DB + the fakes, wired via dependency
     overrides. Returns the TestClient and its own db engine (for tests that
@@ -154,6 +176,17 @@ def _build_test_client(fake_llm_client, silent_tts_provider, null_video_renderer
     app.dependency_overrides[deps.get_llm_client] = lambda: fake_llm_client
     app.dependency_overrides[deps.get_tts_provider] = lambda: silent_tts_provider
     app.dependency_overrides[deps.get_video_renderer] = lambda: null_video_renderer
+    app.dependency_overrides[deps.get_notification_provider] = lambda: (
+        fake_notification_provider if fake_notification_provider is not None else FakeNotificationProvider()
+    )
+    # A fresh, generously-sized limiter per test client: the real limiter is a
+    # process-wide lru_cache singleton, which would otherwise exhaust itself
+    # across the many tests that each fetch one token via the `client`
+    # fixture. Dedicated rate-limit tests override this again with a
+    # deliberately small one to prove the blocking behavior itself.
+    app.dependency_overrides[deps.get_auth_rate_limiter] = lambda: FixedWindowRateLimiter(
+        max_attempts=10_000, window_seconds=60
+    )
 
     # raise_server_exceptions=False: Starlette's ServerErrorMiddleware always
     # re-raises an unhandled exception into the caller after invoking any
@@ -168,14 +201,14 @@ def _build_test_client(fake_llm_client, silent_tts_provider, null_video_renderer
 
 
 @pytest.fixture()
-def client(fake_llm_client, silent_tts_provider, null_video_renderer):
+def client(fake_llm_client, silent_tts_provider, null_video_renderer, fake_notification_provider):
     """A FastAPI TestClient wired to an isolated in-memory DB and the fakes
     above — no network access, no real API keys, fully deterministic. Comes
     pre-authenticated with a real token fetched from `/auth/token`, so every
     pre-existing test written before v1.1's auth requirement keeps working
     unchanged."""
     test_client, session_factory, app = _build_test_client(
-        fake_llm_client, silent_tts_provider, null_video_renderer
+        fake_llm_client, silent_tts_provider, null_video_renderer, fake_notification_provider
     )
 
     token_response = test_client.post(
@@ -195,11 +228,11 @@ def client(fake_llm_client, silent_tts_provider, null_video_renderer):
 
 
 @pytest.fixture()
-def unauthenticated_client(fake_llm_client, silent_tts_provider, null_video_renderer):
+def unauthenticated_client(fake_llm_client, silent_tts_provider, null_video_renderer, fake_notification_provider):
     """Same wiring as `client`, but with no Authorization header attached —
     for the negative-path auth tests (missing/invalid/expired token)."""
     test_client, session_factory, app = _build_test_client(
-        fake_llm_client, silent_tts_provider, null_video_renderer
+        fake_llm_client, silent_tts_provider, null_video_renderer, fake_notification_provider
     )
 
     yield test_client

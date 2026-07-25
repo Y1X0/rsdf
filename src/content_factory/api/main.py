@@ -2,9 +2,10 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
-from content_factory.api.routers import analytics, auth, campaigns, content, dashboard, niches, review
+from content_factory.api.routers import analytics, auth, budget, campaigns, content, dashboard, niches, review
 from content_factory.db.base import engine
 from content_factory.logging_config import configure_logging, get_logger
+from content_factory.services.budget_governor import BudgetExceeded
 from content_factory.services.idempotency import IdempotencyConflict, IdempotencyInProgress
 
 logger = get_logger(__name__)
@@ -25,6 +26,7 @@ def create_app() -> FastAPI:
     app.include_router(review.router)
     app.include_router(analytics.router)
     app.include_router(dashboard.router)
+    app.include_router(budget.router)
 
     @app.exception_handler(IdempotencyConflict)
     def _handle_idempotency_conflict(request: Request, exc: IdempotencyConflict) -> JSONResponse:
@@ -33,6 +35,13 @@ def create_app() -> FastAPI:
     @app.exception_handler(IdempotencyInProgress)
     def _handle_idempotency_in_progress(request: Request, exc: IdempotencyInProgress) -> JSONResponse:
         return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+    @app.exception_handler(BudgetExceeded)
+    def _handle_budget_exceeded(request: Request, exc: BudgetExceeded) -> JSONResponse:
+        # 402 Payment Required — fail closed per ARCHITECTURE.md §10c/§20:
+        # a monthly ceiling is a human-set decision, so the system never
+        # auto-raises it, it just stops spending until someone does.
+        return JSONResponse(status_code=402, content={"detail": str(exc)})
 
     @app.exception_handler(Exception)
     def _handle_unexpected_error(request: Request, exc: Exception) -> JSONResponse:

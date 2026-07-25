@@ -61,3 +61,81 @@ class PatternType(str, enum.Enum):
     STRUCTURE = "structure"
     NICHE = "niche"
     TIMING = "timing"
+
+
+# --- Phase 2 additions below ---
+
+
+class BudgetScope(str, enum.Enum):
+    """ARCHITECTURE.md §10c — a budget ceiling applies either system-wide
+    or to one specific niche; `niche_id` is null for system scope."""
+
+    SYSTEM = "system"
+    NICHE = "niche"
+
+
+class NotificationChannel(str, enum.Enum):
+    LOG = "log"
+    SLACK = "slack"
+    EMAIL = "email"
+
+
+class NotificationSeverity(str, enum.Enum):
+    INFO = "info"
+    WARNING = "warning"
+    CRITICAL = "critical"
+
+
+class AccountPlatform(str, enum.Enum):
+    TIKTOK = "tiktok"
+    YOUTUBE = "youtube"
+    INSTAGRAM = "instagram"
+
+
+class AccountHealthTier(str, enum.Enum):
+    """ARCHITECTURE.md §8b. A tier drop overrides the system-level
+    automation phase for that specific account regardless of what the
+    rest of the portfolio is doing."""
+
+    HEALTHY = "healthy"
+    WATCH = "watch"
+    AT_RISK = "at_risk"
+    RESTRICTED = "restricted"
+
+
+class AccountWarmupStatus(str, enum.Enum):
+    WARMING = "warming"
+    ACTIVE = "active"
+
+
+class AccountStatus(str, enum.Enum):
+    ACTIVE = "active"
+    PAUSED = "paused"
+    SUSPENDED = "suspended"
+
+
+class PublicationStatus(str, enum.Enum):
+    SCHEDULED = "scheduled"
+    PUBLISHED = "published"
+    FAILED = "failed"
+    REMOVED = "removed"
+
+
+class ExperimentAxis(str, enum.Enum):
+    HOOK = "hook"
+    NICHE = "niche"
+    LENGTH = "length"
+    POSTING_TIME = "posting_time"
+
+
+class ExperimentStatus(str, enum.Enum):
+    RUNNING = "running"
+    CONCLUDED = "concluded"
+    INCONCLUSIVE = "inconclusive"
+
+
+class ExperimentSubjectType(str, enum.Enum):
+    HOOK = "hook"
+    NICHE = "niche"
+    LENGTH_BUCKET = "length_bucket"
+    POSTING_TIME_BUCKET = "posting_time_bucket"

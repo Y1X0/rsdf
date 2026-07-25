@@ -13,10 +13,13 @@ from functools import lru_cache
 
 from sqlalchemy.orm import Session
 
+from content_factory.auth.rate_limiter import FixedWindowRateLimiter
 from content_factory.config import get_settings
 from content_factory.db.base import SessionLocal
 from content_factory.llm.base import LLMClient
 from content_factory.llm.factory import get_llm_client as _build_llm_client
+from content_factory.notifications.base import NotificationProvider
+from content_factory.notifications.factory import get_notification_provider as _build_notification_provider
 from content_factory.video_production.renderer.base import VideoRenderer
 from content_factory.video_production.renderer.factory import get_video_renderer as _build_video_renderer
 from content_factory.video_production.tts.base import TTSProvider
@@ -63,3 +66,25 @@ def get_tts_provider() -> TTSProvider:
 
 def get_video_renderer() -> VideoRenderer:
     return _video_renderer_singleton()
+
+
+@lru_cache
+def _notification_provider_singleton() -> NotificationProvider:
+    return _build_notification_provider(get_settings())
+
+
+@lru_cache
+def _auth_rate_limiter_singleton() -> FixedWindowRateLimiter:
+    settings = get_settings()
+    return FixedWindowRateLimiter(
+        max_attempts=settings.auth_token_rate_limit_max_attempts,
+        window_seconds=settings.auth_token_rate_limit_window_seconds,
+    )
+
+
+def get_notification_provider() -> NotificationProvider:
+    return _notification_provider_singleton()
+
+
+def get_auth_rate_limiter() -> FixedWindowRateLimiter:
+    return _auth_rate_limiter_singleton()

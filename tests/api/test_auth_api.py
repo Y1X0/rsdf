@@ -88,6 +88,35 @@ def test_non_operator_role_is_forbidden_from_write_endpoints(unauthenticated_cli
     assert resp.status_code == 200
 
 
+def test_token_endpoint_rate_limited_after_repeated_attempts(unauthenticated_client):
+    """Regression for PHASE1_AUDIT_v2.md N1: `/auth/token` had no rate
+    limiting, so an attacker could brute-force `auth_client_secret` at
+    whatever rate the network allowed. `unauthenticated_client`'s
+    dependency override is deliberately replaced here with a small,
+    real limiter (the fixture's default is generous — 10k/window — so the
+    many other tests that each fetch one token don't trip it)."""
+    from content_factory.api import deps
+    from content_factory.api.main import app
+    from content_factory.auth.rate_limiter import FixedWindowRateLimiter
+
+    # A single shared instance, not a lambda that builds a fresh one per
+    # request — FastAPI calls a dependency override fresh on every request
+    # unless it's the *same* callable object returned each time.
+    strict_limiter = FixedWindowRateLimiter(max_attempts=3, window_seconds=60)
+    app.dependency_overrides[deps.get_auth_rate_limiter] = lambda: strict_limiter
+
+    for _ in range(3):
+        resp = unauthenticated_client.post(
+            "/auth/token", json={"client_id": "test-operator", "client_secret": "wrong-secret"}
+        )
+        assert resp.status_code == 401
+
+    resp = unauthenticated_client.post(
+        "/auth/token", json={"client_id": "test-operator", "client_secret": "test-operator-secret"}
+    )
+    assert resp.status_code == 429
+
+
 def test_review_endpoint_uses_authenticated_identity_not_request_body(client):
     """PHASE1_AUDIT.md F2's specific manifestation on the review endpoint:
     a client used to be able to submit any `reviewer_id` string and have it

@@ -45,6 +45,21 @@ class Settings(BaseSettings):
     auth_client_id: str = "phase1-operator"
     auth_client_secret: str = ""
 
+    # --- Auth token rate limiting (Phase 2 M1, PHASE1_AUDIT_v2.md N1) ---
+    # A fixed-window limiter, in-process (no new infra) — see
+    # api/routers/auth.py. Deliberately generous defaults since this guards
+    # against brute-forcing AUTH_CLIENT_SECRET, not normal usage.
+    auth_token_rate_limit_max_attempts: int = 10
+    auth_token_rate_limit_window_seconds: int = 60
+
+    # --- Notifications (Phase 2 M1) ---
+    notification_provider: str = "log"  # "log" | "slack" | "email"
+    slack_webhook_url: str = ""
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_from_addr: str = ""
+    smtp_to_addr: str = ""
+
     def resolved_llm_provider(self) -> str:
         """Fall back to the fake provider if no key is configured, regardless
         of what LLM_PROVIDER says — prevents the app crashing on missing
@@ -57,6 +72,13 @@ class Settings(BaseSettings):
         if self.tts_provider == "elevenlabs" and not self.elevenlabs_api_key:
             return "silent"
         return self.tts_provider
+
+    def resolved_notification_provider(self) -> str:
+        if self.notification_provider == "slack" and not self.slack_webhook_url:
+            return "log"
+        if self.notification_provider == "email" and not (self.smtp_host and self.smtp_to_addr):
+            return "log"
+        return self.notification_provider
 
     def media_storage_path(self) -> Path:
         path = Path(self.media_storage_dir)

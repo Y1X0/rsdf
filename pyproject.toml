@@ -27,6 +27,12 @@ rendering = [
 elevenlabs = [
     "httpx>=0.27",
 ]
+# Optional Slack notification backend (Phase 2 M1). Without this extra
+# installed, NOTIFICATION_PROVIDER=slack falls back to LogNotificationProvider
+# (see notifications/factory.py) — never a hard import-time failure.
+notifications = [
+    "httpx>=0.27",
+]
 dev = [
     "pytest>=8.2",
     "pytest-asyncio>=0.23",
