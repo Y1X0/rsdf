@@ -1,7 +1,16 @@
 # AI Content Factory — Architecture & Strategy Document
 
 **System:** Automated content pipeline for Whop Content Rewards campaigns
-**Status:** Design phase — approved for implementation planning; **no code written yet**
+**Status:** This is the original pre-implementation design document (v0.3)
+and is kept as-written for historical reference — it still describes the
+full three-phase design intent. **Phase 1 (MVP), the v1.1 stability/security
+patch, and Phase 2 (M1-M6: active Cost Control Layer, quality-gate
+thresholds, Creator Account Management, Publishing Agent, Metrics Ingestion
+Automation, Experimentation Engine + Revenue rollups) are all now
+implemented** — see `docs/PHASE1.md` for what was actually built, where,
+and how it maps to the sections below; `docs/PHASE1_AUDIT.md` and
+`docs/PHASE1_AUDIT_v2.md` for the production-readiness audits that gated
+each phase. Phase 3 (full automation) remains design-only.
 **Version:** 0.3 (final pre-implementation revision — adds campaign intelligence,
 quality scoring, creator account management, cost control layer, data flywheel
 architecture, expanded security/account safety, and MVP success metrics)

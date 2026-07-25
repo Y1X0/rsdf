@@ -1,16 +1,21 @@
-# Phase 1 Implementation — Developer Guide
+# Phase 1 & 2 Implementation — Developer Guide
 
-This is the Phase 1 MVP described in `ARCHITECTURE.md` §16/§22-23: manual
-campaign input, a working Research Agent and Script Agent, a template-based
-production pipeline, a human review workflow, and an analytics/cost/revenue
-foundation, exposed over a REST API. It is **not** the full architecture —
-publishing to real platforms, account management, the acting Experimentation
-Engine, and generative video are all explicitly out of scope until Phase 2/3.
+This started as the Phase 1 MVP described in `ARCHITECTURE.md` §16/§22-23:
+manual campaign input, a working Research Agent and Script Agent, a
+template-based production pipeline, a human review workflow, and an
+analytics/cost/revenue foundation, exposed over a REST API. **Phase 2**
+(below) closes the seven capability gaps §16's "Partial automation" column
+calls for: real platform publishing, metrics ingestion, an active Cost
+Control Layer, Creator Account Management, quality-gate thresholds, and the
+Experimentation Engine (recommend-only) plus Revenue Optimization rollups.
+Generative video and fully-autonomous publishing remain out of scope until
+Phase 3.
 
 **Version 1.1** is a stability & security patch release — see
 `docs/PHASE1_AUDIT.md` for the findings it addresses and
-`docs/PHASE1_AUDIT_v2.md` for the re-audit and Go/No-Go verdict. No new
-product features were added; every change below is a fix.
+`docs/PHASE1_AUDIT_v2.md` for the re-audit and Go/No-Go verdict that
+unlocked Phase 2. No new product features were added in v1.1; every change
+there was a fix.
 
 ## What's implemented
 
@@ -40,6 +45,36 @@ product features were added; every change below is a fix.
 | F11 (medium) — two endpoints returned untyped dicts | `CostEntryOut`/`RevenueEntryOut` response models | `schemas/analytics.py` |
 | F20 (medium) — `/health` didn't check anything | Checks real DB connectivity via its own short-lived connection | `api/main.py` |
 | (new in this pass) no generic exception handler | Unhandled exceptions now log with context and return a proper 500 instead of crashing the process view | `api/main.py` |
+
+## Phase 2 (M1-M6)
+
+Delivered milestone by milestone, one commit and one Alembic migration per
+milestone (`0003`-`0007`), full suite green after each before the next
+started — see the approved Phase 2 implementation plan for the full
+rationale behind each design choice. Every addition is additive: no
+existing Phase 1/v1.1 table, endpoint contract, or service signature
+changed, and all 115 Phase 1/v1.1 tests still pass unmodified.
+
+| Milestone | What it adds | Where |
+|---|---|---|
+| M1 — Cost Control Layer | Active budget governor (`check_budget`/`enforce_budget`), computed on demand from `cost_ledger` — never a cached counter; fires an alert exactly once per 50/80/95/100% threshold via a new `NotificationProvider` interface (log/Slack/email); fails closed (402) at 100% until a human raises the ceiling. Also closes audit item N1: fixed-window rate limiting on `POST /auth/token`. | `services/budget_governor.py`, `notifications/`, `auth/rate_limiter.py`, migration `0003` |
+| M2 — Quality Scoring threshold gating | Opt-in (disabled by default) auto-reject: a video whose `originality_score`/`policy_risk_score` breaches a configured threshold goes straight to `REJECTED` with a system-authored `ReviewDecision`, reusing the existing review/audit machinery. Also adds `niches.allocation_weight` ahead of M6. | `services/quality_scoring.py::determine_auto_reject_reason`, migration `0004` |
+| M3 — Creator Account Management | `owned_accounts`/`account_health_snapshots`; heuristic health scoring (cadence-vs-cap, engagement trend, strikes, API error rate) mapped to Healthy/Watch/At-Risk/Restricted tiers; Fernet-encrypted OAuth tokens (never serialized as more than `has_credentials: bool`); warmup graduation (`warming` → `active`) gated on account age + health tier. | `services/account_service.py`, `services/token_encryption.py`, `api/routers/accounts.py`, migration `0005` |
+| M4 — Publishing Agent | New `publishing/` package (mirrors `video_production/`'s shape): `PublishingProvider` interface, `ManualPublishingProvider` default (always available — readies content for a human to post), real TikTok/YouTube/Instagram providers (structurally complete, never exercised live, unit-tested against mocked HTTP). Enforces account-health-tier and daily-cadence-cap guardrails in code before any provider call; retry-with-backoff (closes audit item F19) on the first real external HTTP integration; `PUBLISHING_ENABLED` kill-switch. | `publishing/`, `services/publishing_service.py`, `api/routers/publications.py`, migration `0006` |
+| M5 — Metrics Ingestion Automation | New `analytics_ingestion/` package, same shape as `publishing/`. `POST /publications/{id}/metrics/sync` feeds a fetched result through the *existing, unchanged* `analytics_service.record_metrics` — the manual `POST /videos/{id}/metrics` endpoint is untouched and remains the permanent fallback, not a transitional path. | `analytics_ingestion/`, `api/routers/publications.py` |
+| M6 — Experimentation Engine + Revenue rollups | All four §5 axes (hook, niche, length, posting_time) as a documented heuristic (candidate must beat the mean of all other eligible subjects by a configurable margin — not a real significance test). Strictly recommend-only: `POST /experimentation/run` only ever writes `experiment_results`; only the separate `POST /experimentation/recommendations/{id}/apply` mutates `niches.allocation_weight` or `learning_patterns.confidence_tier`. Plus `GET /niches/{id}/profit` and `GET /accounts/{id}/profit`, reusing `compute_profit_summary`'s aggregation pattern. | `services/experimentation_service.py`, `api/routers/experimentation.py`, migration `0007` |
+
+**New Settings this phase** (all documented in `.env.example`, all empty/
+safe-default unless explicitly configured): `AUTH_TOKEN_RATE_LIMIT_*`,
+`NOTIFICATION_PROVIDER`/`SLACK_WEBHOOK_URL`/`SMTP_*`,
+`QUALITY_ORIGINALITY_AUTO_REJECT_FLOOR`/`QUALITY_POLICY_RISK_AUTO_REJECT_CEILING`,
+`TOKEN_ENCRYPTION_KEY`/`ACCOUNT_WARMUP_MINIMUM_AGE_DAYS`,
+`PUBLISHING_ENABLED`/`TIKTOK_*`/`YOUTUBE_*`/`INSTAGRAM_*`.
+
+**New optional extras:** `notifications` and `publishing` (both just
+`httpx`, mirroring the existing `elevenlabs` extra) — real Slack/platform
+providers fall back to their zero-dependency default the same way
+`resolved_tts_provider()` already does when no API key is configured.
 
 ## Setup
 
@@ -134,8 +169,9 @@ lists are used instead). This means the exact same `Base.metadata` and the
 same Alembic migrations produce a working schema on both Postgres
 (production/dev — matches `ARCHITECTURE.md` §14) and in-memory SQLite (the
 whole test suite, see `tests/conftest.py`). Verified: `alembic check`
-reports no drift against a real local Postgres 16 instance, for both
-migration `0001` and `0002`, including round-trip up/down/up.
+reports no drift against a real local Postgres 16 instance for every
+migration `0001`-`0007`, including a full `base` → `head` → `base` → `head`
+round-trip, not just each new migration in isolation.
 
 ## Running tests
 
@@ -143,7 +179,8 @@ migration `0001` and `0002`, including round-trip up/down/up.
 pytest
 ```
 
-115 tests, all against in-memory SQLite with fake/silent/null providers —
+210 tests (115 Phase 1/v1.1 + 95 Phase 2), all against in-memory SQLite
+with fake/silent/null/manual providers —
 no network access, no database server, no real API keys required (a fixed
 test JWT secret is configured in `tests/conftest.py`, since auth itself is
 always on). Structure:
@@ -333,23 +370,47 @@ populate it without a schema change, and API consumers must treat `null` as
 see the QC entry above — quality scoring judges the *content*, QC judges
 whether the *pipeline* did its job.)
 
-## Known Phase 1 limitations (intentional, not bugs)
+## Known limitations (intentional, not bugs)
+
+Resolved by Phase 2 (kept here, struck through, for history — see the
+Phase 2 table above for what replaced each):
+
+- ~~No real platform publishing (TikTok/YouTube/IG)~~ — M4's `publishing/`
+  package adds real (if never-live-exercised) providers behind
+  `PublishingProvider`, plus the always-available `ManualPublishingProvider`
+  fallback.
+- ~~Metrics/cost/revenue are entered manually via API — no platform
+  Analytics API polling yet~~ — M5's `analytics_ingestion/` package adds
+  `POST /publications/{id}/metrics/sync`; manual entry remains available
+  and untouched.
+- ~~Account health/warmup (`ARCHITECTURE.md` §8) is not built~~ — M3 adds
+  `owned_accounts`/`account_health_snapshots`, health scoring, and warmup
+  graduation.
+
+Still true after Phase 2:
 
 - Whop campaign discovery is fully manual (`POST /campaigns`) — no scraping,
   per `ARCHITECTURE.md` §0's caveat about the lack of a confirmed public API.
-- No real platform publishing (TikTok/YouTube/IG) — a video's `status`
-  reaches `approved`, and publishing itself is a manual, off-system step
-  until Phase 2's API integrations are built.
-- Metrics/cost/revenue are entered manually via API — no platform Analytics
-  API polling yet.
 - Vector/embedding-based hook retrieval is deferred; `content_intelligence.get_top_hooks`
   uses plain SQL filter+sort. Swapping in pgvector similarity search later
   only touches that one function.
-- Account health/warmup (`ARCHITECTURE.md` §8) is not built — Phase 1 has no
-  concept of "which social account this got posted to" at all yet.
 - Auth is single-tier client-credentials (one shared identity, one
   `operator` role) — no per-user accounts, no read-only role in practice
   yet, no token refresh/revocation flow beyond natural expiry.
 - No CI pipeline yet, no dependency lockfile, no request-ID log
-  correlation — see `docs/PHASE1_AUDIT_v2.md` for what's still open after
-  this patch and why none of it blocks continued Phase 1 validation use.
+  correlation — see `docs/PHASE1_AUDIT_v2.md` for what was still open going
+  into Phase 2 and why none of it blocked that decision.
+- The Experimentation Engine's four axes (M6) use a documented heuristic
+  margin-over-baseline, not a real statistical significance test —
+  `ARCHITECTURE.md` §5 itself flags that Phase 2/3 volume likely isn't
+  dense enough yet for that to matter in practice.
+- Real publishing/analytics providers (TikTok/YouTube/Instagram, M4/M5) are
+  structurally complete and unit-tested against mocked HTTP, but have never
+  been exercised against a live API in this environment (no provisioned
+  app-review credentials) — the same honest posture Phase 1's
+  Anthropic/ElevenLabs providers already had.
+- Length/posting-time experiment recommendations (M6) have no existing
+  downstream column to write to yet (`ARCHITECTURE.md` §5's "feeds Script
+  Agent's `target_duration_s` guidance" needs a guidance store this phase
+  didn't add) — applying one records human endorsement (`applied_at`/
+  `applied_by`) without a further side effect, unlike the hook/niche axes.
