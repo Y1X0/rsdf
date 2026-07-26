@@ -10,6 +10,10 @@
 # any multi-replica deploy.
 set -e
 
+# PORT defaults to 8000 (docker-compose.yml, plain `docker run` with no
+# PORT set) but is honored when the platform injects one — required for
+# Render's Docker web services, which assign their own PORT and expect the
+# container to bind to it rather than a fixed value.
 case "$1" in
   migrate)
     exec alembic upgrade head
@@ -17,7 +21,7 @@ case "$1" in
   serve|"")
     exec uvicorn content_factory.api.main:app \
       --host 0.0.0.0 \
-      --port 8000 \
+      --port "${PORT:-8000}" \
       --workers "${WEB_CONCURRENCY:-1}"
     ;;
   *)

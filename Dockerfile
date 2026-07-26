@@ -55,9 +55,12 @@ USER app
 EXPOSE 8000
 
 # Uses the app's own /health endpoint (checks real DB connectivity, see
-# api/main.py) rather than just "is the process alive."
+# api/main.py) rather than just "is the process alive." Reads $PORT (see
+# docker-entrypoint.sh) so this still hits the port the app actually bound
+# to on platforms that assign their own (e.g. Render), falling back to the
+# same 8000 default used locally/in docker-compose.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD curl -fsS http://127.0.0.1:8000/health || exit 1
+    CMD curl -fsS "http://127.0.0.1:${PORT:-8000}/health" || exit 1
 
 ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["serve"]

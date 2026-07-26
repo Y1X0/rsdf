@@ -59,6 +59,14 @@ compiler/build headers, and declares a `HEALTHCHECK` against the app's own
 `SilentTTSProvider` unless rebuilt with those extras added (see the
 Dockerfile's own comment for the one-line change).
 
+**Port binding respects `$PORT`, defaulting to `8000`.** `docker-entrypoint.sh`
+runs `uvicorn --port "${PORT:-8000}"`, and the `HEALTHCHECK` targets the same
+value — plain `docker run`/`docker-compose.yml` (neither sets `PORT`) keep
+working on `8000` exactly as before, while platforms that assign their own
+port and require the container to bind to it (e.g. Render's Docker web
+services) work without any image change. See `render.yaml` and
+`docs/PRODUCTION_DEPLOYMENT_VERIFICATION.md` for a full Render deployment.
+
 ## 4. Local production-like environment (Docker Compose)
 
 ```bash
