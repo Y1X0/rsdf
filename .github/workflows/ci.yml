@@ -31,6 +31,21 @@ jobs:
           --health-interval=5s
           --health-timeout=5s
           --health-retries=10
+      # Production Hardening Sprint H8: without this, tests/unit/
+      # test_redis_rate_limiter.py's real-Redis distributed-safety
+      # regression test silently skips in CI (it's designed to skip
+      # cleanly when Redis is unavailable, so its absence here was never
+      # loud) and /health's Redis check has nothing to actually verify
+      # against — matching docker-compose.yml's own redis:7-alpine choice.
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
 
     env:
       DATABASE_URL: postgresql+psycopg2://content_factory:content_factory@localhost:5432/content_factory
