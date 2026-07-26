@@ -26,6 +26,11 @@ def get_llm_client(settings: Settings) -> LLMClient:
             model_version=settings.anthropic_model_version,
         )
 
+    if provider == "groq":
+        from content_factory.llm.providers.groq_provider import GroqLLMClient
+
+        return GroqLLMClient(api_key=settings.groq_api_key, model=settings.groq_model)
+
     if provider == "fake":
         logger.warning(
             "llm_provider_fallback",

@@ -28,6 +28,16 @@ rendering = [
 elevenlabs = [
     "httpx>=0.27",
 ]
+# Optional Groq LLM provider (free-tier alternative to Anthropic — see
+# llm/providers/groq_provider.py). LLM_PROVIDER=groq with no GROQ_API_KEY
+# set already falls back to FakeLLMClient (config.py's
+# resolved_llm_provider). If a key is set but this extra isn't installed,
+# httpx's lazy import raises a clear RuntimeError on first real call
+# (same pattern as elevenlabs_provider.py), not at import/construction
+# time.
+groq = [
+    "httpx>=0.27",
+]
 # Optional Slack notification backend (Phase 2 M1). Without this extra
 # installed, NOTIFICATION_PROVIDER=slack falls back to LogNotificationProvider
 # (see notifications/factory.py) — never a hard import-time failure.

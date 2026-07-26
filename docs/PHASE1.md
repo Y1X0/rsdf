@@ -142,9 +142,13 @@ Every external *provider* integration is optional by design (adjustment #6
 + the `resolved_*_provider()` methods in `config.py`) — this is separate
 from the authentication above, which is always required:
 
-- No `ANTHROPIC_API_KEY` → the Research/Script Agents use `FakeLLMClient`,
-  which returns an empty JSON array/object instead of crashing. You'll see
-  `llm_provider_fallback` in the logs. Real generation requires a real key.
+- No `ANTHROPIC_API_KEY` (or, if `LLM_PROVIDER=groq`, no `GROQ_API_KEY`) →
+  the Research/Script Agents use `FakeLLMClient`, which returns an empty
+  JSON array/object instead of crashing. You'll see `llm_provider_fallback`
+  in the logs. Real generation requires a real key. `LLM_PROVIDER=groq` is
+  a free-tier alternative to Anthropic (`llm/providers/groq_provider.py`) —
+  same `LLMClient` interface, selected the same way, added when a paid
+  Anthropic account wasn't available for the pilot's first run.
 - `TTS_PROVIDER=silent` (default) → produces a real (silent) WAV file using
   only the Python standard library — no ElevenLabs key needed.
 - `RENDERER_BACKEND=null` (default) → produces a JSON render manifest
@@ -156,7 +160,8 @@ review → metrics → profit — is exercisable end to end with zero provider
 secrets (just the JWT auth config), which is also exactly how the test
 suite works.
 
-To use real providers: set `ANTHROPIC_API_KEY`, and/or
+To use real providers: set `ANTHROPIC_API_KEY` (or `LLM_PROVIDER=groq` +
+`GROQ_API_KEY`, installing with `pip install '.[groq]'`), and/or
 `TTS_PROVIDER=elevenlabs` + `ELEVENLABS_API_KEY` (install with
 `pip install '.[elevenlabs]'`), and/or `RENDERER_BACKEND=template_pillow`
 (install with `pip install '.[rendering]'`).

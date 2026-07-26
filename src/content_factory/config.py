@@ -22,10 +22,18 @@ class Settings(BaseSettings):
 
     database_url: str = "sqlite:///./var/content_factory.db"
 
-    llm_provider: str = "anthropic"  # "anthropic" | "fake"
+    llm_provider: str = "anthropic"  # "anthropic" | "groq" | "fake"
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-sonnet-5"
     anthropic_model_version: str = "2026-02-01"
+
+    # --- Groq (free-tier LLM provider, added for the pilot per the
+    # Anthropic-billing blocker) — an alternative real provider, not a
+    # replacement; see llm/providers/groq_provider.py. OpenAI-compatible
+    # REST API, so no new SDK dependency (lazy httpx import, same pattern
+    # as every other real provider in this codebase).
+    groq_api_key: str = ""
+    groq_model: str = "llama-3.3-70b-versatile"
 
     tts_provider: str = "silent"  # "elevenlabs" | "silent"
     elevenlabs_api_key: str = ""
@@ -128,6 +136,8 @@ class Settings(BaseSettings):
         of what LLM_PROVIDER says — prevents the app crashing on missing
         secrets and makes "no key" a first-class, testable state."""
         if self.llm_provider == "anthropic" and not self.anthropic_api_key:
+            return "fake"
+        if self.llm_provider == "groq" and not self.groq_api_key:
             return "fake"
         return self.llm_provider
 
