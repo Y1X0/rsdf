@@ -1,8 +1,9 @@
 import uuid
+from pathlib import Path
 
 import structlog
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy import text
 
 from content_factory.api.routers import (
@@ -141,6 +142,16 @@ def create_app() -> FastAPI:
         if any(status == "unreachable" for status in checks.values()):
             return JSONResponse(status_code=503, content={"status": "unhealthy", "checks": checks})
         return {"status": "ok", "checks": checks}
+
+    # Minimal operator UI: a single static, dependency-free HTML page
+    # calling this same API from the browser (same-origin fetch, no CORS
+    # config needed) — for running the pipeline without Swagger/curl.
+    # Not part of the API surface, so it's excluded from the OpenAPI schema.
+    _dashboard_path = Path(__file__).resolve().parent.parent / "static" / "dashboard.html"
+
+    @app.get("/dashboard", include_in_schema=False)
+    def dashboard_ui() -> FileResponse:
+        return FileResponse(_dashboard_path)
 
     # Instrumented last (Production Hardening Sprint H6), after every other
     # route is registered — prometheus-fastapi-instrumentator's own

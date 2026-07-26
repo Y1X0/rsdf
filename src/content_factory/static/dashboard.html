@@ -1,0 +1,421 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>لوحة تحكم AI Content Factory</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #1a1d24; --border: #2a2e38; --text: #e8e8ec;
+    --muted: #9aa0ac; --accent: #4f7cff; --ok: #2ecc71; --err: #e74c3c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, "Segoe UI", Tahoma, sans-serif;
+    margin: 0; padding: 16px; line-height: 1.5;
+  }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  h2 { font-size: 16px; margin: 0 0 10px; color: var(--accent); }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 18px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 16px; margin-bottom: 14px;
+  }
+  .card.disabled { opacity: 0.45; pointer-events: none; }
+  label { display: block; font-size: 13px; color: var(--muted); margin: 8px 0 4px; }
+  input, textarea, select {
+    width: 100%; background: #0d0f13; border: 1px solid var(--border); color: var(--text);
+    border-radius: 6px; padding: 8px 10px; font-size: 14px; font-family: inherit;
+  }
+  textarea { min-height: 70px; resize: vertical; }
+  button {
+    background: var(--accent); color: #fff; border: none; border-radius: 6px;
+    padding: 10px 14px; font-size: 14px; cursor: pointer; margin-top: 10px; margin-inline-end: 8px;
+  }
+  button.secondary { background: #333844; }
+  button:active { transform: scale(0.98); }
+  table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; }
+  th, td { text-align: right; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  tr.row-selectable { cursor: pointer; }
+  tr.row-selectable:hover { background: #232733; }
+  tr.row-selected { background: #202b45; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 20px; font-size: 11px; }
+  .pill.ok { background: rgba(46,204,113,.15); color: var(--ok); }
+  .pill.muted { background: rgba(154,160,172,.15); color: var(--muted); }
+  .status-line { font-size: 13px; margin-top: 8px; white-space: pre-wrap; word-break: break-word; }
+  .status-line.ok { color: var(--ok); }
+  .status-line.err { color: var(--err); }
+  .current { font-size: 12px; color: var(--muted); margin-bottom: 10px; }
+  .current b { color: var(--text); }
+  #log { max-height: 220px; overflow-y: auto; font-family: ui-monospace, monospace; font-size: 12px; white-space: pre-wrap; color: var(--muted); }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .top { display: flex; justify-content: space-between; align-items: center; }
+</style>
+</head>
+<body>
+
+<div class="top">
+  <div>
+    <h1>لوحة تحكم AI Content Factory</h1>
+    <div class="sub">واجهة بسيطة فوق نفس الـ API — لا تحتاج JSON ولا Swagger</div>
+  </div>
+  <div id="loginBadge" class="pill muted">غير مسجّل دخول</div>
+</div>
+
+<!-- 1. Login -->
+<div class="card" id="loginCard">
+  <h2>1. تسجيل الدخول</h2>
+  <div class="grid2">
+    <div>
+      <label>Client ID</label>
+      <input id="clientId" value="pilot-operator">
+    </div>
+    <div>
+      <label>Client Secret</label>
+      <input id="clientSecret" type="password" placeholder="الصق القيمة السرية هنا">
+    </div>
+  </div>
+  <button onclick="login()">تسجيل الدخول</button>
+  <div id="loginStatus" class="status-line"></div>
+</div>
+
+<!-- 2. Campaigns -->
+<div class="card disabled" id="campaignsCard">
+  <h2>2. الحملات (Campaigns)</h2>
+  <div class="grid2">
+    <div>
+      <label>اسم البراند / الحملة</label>
+      <input id="brandName" placeholder="مثال: MyBrand">
+    </div>
+    <div>
+      <label>النيتش / المجال (اختياري)</label>
+      <input id="nicheName" placeholder="مثال: fitness">
+    </div>
+  </div>
+  <label>نص القواعد / الشروط (اختياري)</label>
+  <textarea id="rulesText" placeholder="شروط الحملة إن وجدت"></textarea>
+  <button onclick="createCampaign()">إنشاء حملة</button>
+  <button class="secondary" onclick="listCampaigns()">تحديث القائمة</button>
+  <div id="campaignsStatus" class="status-line"></div>
+  <table id="campaignsTable"><thead><tr><th>ID</th><th>الاسم</th><th>الحالة</th></tr></thead><tbody></tbody></table>
+</div>
+
+<!-- 3. Pipeline -->
+<div class="card disabled" id="pipelineCard">
+  <h2>3. خط الإنتاج (لحملة واحدة محددة)</h2>
+  <div class="current">الحملة المحددة حاليًا: <b id="curCampaign">لا يوجد</b> — اضغط على صف من الجدول أعلاه لاختيارها</div>
+
+  <h2 style="margin-top:18px">أ. البحث (Research)</h2>
+  <textarea id="rawNotes" placeholder="ملاحظات عن المنافسين/الفكرة (اختياري)"></textarea>
+  <button onclick="runResearch()">تشغيل البحث بالذكاء الاصطناعي</button>
+  <div id="researchStatus" class="status-line"></div>
+
+  <h2 style="margin-top:18px">ب. الأفكار (Ideas)</h2>
+  <textarea id="conceptSummary" placeholder="وصف مختصر لفكرة المحتوى"></textarea>
+  <button onclick="createIdea()">إضافة فكرة</button>
+  <button class="secondary" onclick="listIdeas()">عرض الأفكار</button>
+  <div id="ideasStatus" class="status-line"></div>
+  <table id="ideasTable"><thead><tr><th>ID</th><th>الفكرة</th><th>الحالة</th></tr></thead><tbody></tbody></table>
+  <div class="current">الفكرة المحددة: <b id="curIdea">لا يوجد</b></div>
+
+  <h2 style="margin-top:18px">ج. السكريبتات (Scripts)</h2>
+  <label>عدد النسخ</label>
+  <input id="numVariants" type="number" value="2" min="1" max="10">
+  <button onclick="generateScripts()">توليد سكريبتات</button>
+  <div id="scriptsStatus" class="status-line"></div>
+  <table id="scriptsTable"><thead><tr><th>ID</th><th>الحالة</th></tr></thead><tbody></tbody></table>
+  <div class="current">السكريبت المحدد: <b id="curScript">لا يوجد</b></div>
+
+  <h2 style="margin-top:18px">د. إنتاج الفيديو (Render)</h2>
+  <button onclick="renderVideo()">إنتاج الفيديو</button>
+  <div id="renderStatus" class="status-line"></div>
+  <div class="current">الفيديو الناتج: <b id="curVideo">لا يوجد</b></div>
+
+  <h2 style="margin-top:18px">هـ. المراجعة البشرية (مطلوبة قبل النشر)</h2>
+  <div class="grid2">
+    <div>
+      <label>القرار</label>
+      <select id="reviewDecision">
+        <option value="approved">موافقة (approved)</option>
+        <option value="rejected">رفض (rejected)</option>
+        <option value="revision_requested">طلب تعديل (revision_requested)</option>
+      </select>
+    </div>
+    <div>
+      <label>سبب الرفض/التعديل (reason_code، إن وجد)</label>
+      <input id="reasonCode" placeholder="مثال: policy_risk">
+    </div>
+  </div>
+  <label>ملاحظات</label>
+  <textarea id="reviewNotes"></textarea>
+  <button onclick="submitReview()">إرسال قرار المراجعة</button>
+  <div id="reviewStatus" class="status-line"></div>
+
+  <h2 style="margin-top:18px">و. النشر (Publish)</h2>
+  <div class="grid2">
+    <div>
+      <label>Account ID (من /accounts)</label>
+      <input id="publishAccountId" type="number" placeholder="مثال: 1">
+    </div>
+    <div>
+      <label>عنوان الفيديو</label>
+      <input id="publishTitle" placeholder="عنوان المنشور">
+    </div>
+  </div>
+  <textarea id="publishDescription" placeholder="وصف المنشور (اختياري)"></textarea>
+  <button onclick="publishVideo()">نشر</button>
+  <div id="publishStatus" class="status-line"></div>
+</div>
+
+<!-- 4. Budget & summary -->
+<div class="card disabled" id="budgetCard">
+  <h2>4. الميزانية والملخص العام</h2>
+  <div class="grid2">
+    <div>
+      <label>سقف الميزانية الشهري (USD) — نطاق عام</label>
+      <input id="budgetAmount" type="number" placeholder="مثال: 20">
+    </div>
+    <div style="align-self:end">
+      <button onclick="setBudget()">تعيين السقف</button>
+    </div>
+  </div>
+  <div id="budgetStatus" class="status-line"></div>
+  <button class="secondary" onclick="loadSummary()">تحديث الملخص العام</button>
+  <div id="summaryBox" class="status-line"></div>
+</div>
+
+<div class="card">
+  <h2>سجل العمليات (للمطور/الدعم الفني)</h2>
+  <div id="log"></div>
+</div>
+
+<script>
+let token = null;
+let state = { campaignId: null, ideaId: null, scriptId: null, videoId: null };
+
+function log(msg) {
+  const el = document.getElementById('log');
+  const time = new Date().toLocaleTimeString('en-GB');
+  el.textContent = `[${time}] ${msg}\n` + el.textContent;
+}
+
+function setStatus(elId, text, ok) {
+  const el = document.getElementById(elId);
+  el.textContent = text;
+  el.className = 'status-line ' + (ok === true ? 'ok' : ok === false ? 'err' : '');
+}
+
+async function api(path, options = {}) {
+  const headers = options.headers || {};
+  headers['Content-Type'] = 'application/json';
+  if (token) headers['Authorization'] = 'Bearer ' + token;
+  const res = await fetch(path, { ...options, headers });
+  let body;
+  try { body = await res.json(); } catch (e) { body = null; }
+  log(`${options.method || 'GET'} ${path} -> ${res.status}\n${JSON.stringify(body)}`);
+  if (!res.ok) {
+    const detail = body && body.detail ? JSON.stringify(body.detail) : res.status;
+    throw new Error(detail);
+  }
+  return body;
+}
+
+function unlock(cardId) {
+  document.getElementById(cardId).classList.remove('disabled');
+}
+
+async function login() {
+  const client_id = document.getElementById('clientId').value.trim();
+  const client_secret = document.getElementById('clientSecret').value;
+  try {
+    const data = await api('/auth/token', { method: 'POST', body: JSON.stringify({ client_id, client_secret }) });
+    token = data.access_token;
+    setStatus('loginStatus', 'تم تسجيل الدخول بنجاح — صلاحية التوكن ' + Math.round(data.expires_in / 60) + ' دقيقة', true);
+    document.getElementById('loginBadge').textContent = 'مسجّل دخول (' + client_id + ')';
+    document.getElementById('loginBadge').className = 'pill ok';
+    unlock('campaignsCard');
+    unlock('budgetCard');
+    await listCampaigns();
+    await loadSummary();
+  } catch (e) {
+    setStatus('loginStatus', 'فشل تسجيل الدخول: ' + e.message, false);
+  }
+}
+
+async function createCampaign() {
+  const brand_name = document.getElementById('brandName').value.trim();
+  const niche_name = document.getElementById('nicheName').value.trim() || null;
+  const rules_text = document.getElementById('rulesText').value.trim() || null;
+  if (!brand_name) { setStatus('campaignsStatus', 'اسم الحملة مطلوب', false); return; }
+  try {
+    const data = await api('/campaigns', { method: 'POST', body: JSON.stringify({ brand_name, niche_name, rules_text }) });
+    setStatus('campaignsStatus', 'تم إنشاء الحملة رقم ' + data.id, true);
+    await listCampaigns();
+    selectCampaign(data.id, data.brand_name);
+  } catch (e) {
+    setStatus('campaignsStatus', 'خطأ: ' + e.message, false);
+  }
+}
+
+async function listCampaigns() {
+  try {
+    const data = await api('/campaigns?limit=50');
+    const tbody = document.querySelector('#campaignsTable tbody');
+    tbody.innerHTML = '';
+    data.forEach(c => {
+      const tr = document.createElement('tr');
+      tr.className = 'row-selectable';
+      tr.innerHTML = `<td>${c.id}</td><td>${c.brand_name}</td><td>${c.status}</td>`;
+      tr.onclick = () => selectCampaign(c.id, c.brand_name);
+      tbody.appendChild(tr);
+    });
+  } catch (e) {
+    setStatus('campaignsStatus', 'تعذر تحميل القائمة: ' + e.message, false);
+  }
+}
+
+function selectCampaign(id, name) {
+  state.campaignId = id;
+  document.getElementById('curCampaign').textContent = `#${id} (${name})`;
+  unlock('pipelineCard');
+  document.querySelectorAll('#campaignsTable tr').forEach(r => r.classList.remove('row-selected'));
+}
+
+async function runResearch() {
+  if (!state.campaignId) return;
+  const raw_notes = document.getElementById('rawNotes').value;
+  try {
+    setStatus('researchStatus', 'جارٍ التنفيذ عبر الذكاء الاصطناعي...', null);
+    const data = await api(`/campaigns/${state.campaignId}/research`, { method: 'POST', body: JSON.stringify({ raw_notes }) });
+    setStatus('researchStatus', 'النتيجة:\n' + (data.brief_text || '(فارغ)'), true);
+  } catch (e) {
+    setStatus('researchStatus', 'خطأ: ' + e.message, false);
+  }
+}
+
+async function createIdea() {
+  if (!state.campaignId) return;
+  const concept_summary = document.getElementById('conceptSummary').value.trim();
+  if (!concept_summary) { setStatus('ideasStatus', 'وصف الفكرة مطلوب', false); return; }
+  try {
+    const data = await api(`/campaigns/${state.campaignId}/ideas`, { method: 'POST', body: JSON.stringify({ concept_summary }) });
+    setStatus('ideasStatus', 'تم إنشاء الفكرة رقم ' + data.id, true);
+    await listIdeas();
+    selectIdea(data.id, data.concept_summary);
+  } catch (e) {
+    setStatus('ideasStatus', 'خطأ: ' + e.message, false);
+  }
+}
+
+async function listIdeas() {
+  if (!state.campaignId) return;
+  try {
+    const data = await api(`/campaigns/${state.campaignId}/ideas`);
+    const tbody = document.querySelector('#ideasTable tbody');
+    tbody.innerHTML = '';
+    data.forEach(i => {
+      const tr = document.createElement('tr');
+      tr.className = 'row-selectable';
+      tr.innerHTML = `<td>${i.id}</td><td>${i.concept_summary.slice(0, 40)}</td><td>${i.status}</td>`;
+      tr.onclick = () => selectIdea(i.id, i.concept_summary);
+      tbody.appendChild(tr);
+    });
+  } catch (e) {
+    setStatus('ideasStatus', 'تعذر تحميل الأفكار: ' + e.message, false);
+  }
+}
+
+function selectIdea(id, summary) {
+  state.ideaId = id;
+  document.getElementById('curIdea').textContent = `#${id}`;
+}
+
+async function generateScripts() {
+  if (!state.ideaId) { setStatus('scriptsStatus', 'اختر فكرة أولًا', false); return; }
+  const num_variants = parseInt(document.getElementById('numVariants').value || '2', 10);
+  try {
+    const data = await api(`/ideas/${state.ideaId}/scripts`, { method: 'POST', body: JSON.stringify({ num_variants }) });
+    setStatus('scriptsStatus', 'تم توليد ' + data.length + ' نسخة', true);
+    const tbody = document.querySelector('#scriptsTable tbody');
+    tbody.innerHTML = '';
+    data.forEach(s => {
+      const tr = document.createElement('tr');
+      tr.className = 'row-selectable';
+      tr.innerHTML = `<td>${s.id}</td><td>${s.status}</td>`;
+      tr.onclick = () => selectScript(s.id);
+      tbody.appendChild(tr);
+    });
+  } catch (e) {
+    setStatus('scriptsStatus', 'خطأ: ' + e.message, false);
+  }
+}
+
+function selectScript(id) {
+  state.scriptId = id;
+  document.getElementById('curScript').textContent = `#${id}`;
+}
+
+async function renderVideo() {
+  if (!state.scriptId) { setStatus('renderStatus', 'اختر سكريبت أولًا', false); return; }
+  try {
+    const data = await api(`/scripts/${state.scriptId}/render`, { method: 'POST', body: JSON.stringify({}) });
+    state.videoId = data.id;
+    document.getElementById('curVideo').textContent = `#${data.id}`;
+    setStatus('renderStatus', `الحالة: ${data.render_status} — الملف: ${data.asset_url || '(manifest فقط، بدون renderer حقيقي)'}`, true);
+  } catch (e) {
+    setStatus('renderStatus', 'خطأ: ' + e.message, false);
+  }
+}
+
+async function submitReview() {
+  if (!state.videoId) { setStatus('reviewStatus', 'لا يوجد فيديو محدد بعد', false); return; }
+  const decision = document.getElementById('reviewDecision').value;
+  const reason_code = document.getElementById('reasonCode').value.trim() || null;
+  const notes = document.getElementById('reviewNotes').value.trim() || null;
+  try {
+    const data = await api(`/videos/${state.videoId}/review`, { method: 'POST', body: JSON.stringify({ decision, reason_code, notes }) });
+    setStatus('reviewStatus', 'تم تسجيل القرار: ' + data.decision, true);
+  } catch (e) {
+    setStatus('reviewStatus', 'خطأ: ' + e.message, false);
+  }
+}
+
+async function publishVideo() {
+  if (!state.videoId) { setStatus('publishStatus', 'لا يوجد فيديو محدد بعد', false); return; }
+  const account_id = parseInt(document.getElementById('publishAccountId').value, 10);
+  const title = document.getElementById('publishTitle').value.trim();
+  const description = document.getElementById('publishDescription').value.trim();
+  if (!account_id || !title) { setStatus('publishStatus', 'account_id والعنوان مطلوبان', false); return; }
+  try {
+    const data = await api(`/videos/${state.videoId}/publish`, { method: 'POST', body: JSON.stringify({ account_id, title, description }) });
+    setStatus('publishStatus', 'تم النشر — الحالة: ' + data.status, true);
+  } catch (e) {
+    setStatus('publishStatus', 'خطأ: ' + e.message, false);
+  }
+}
+
+async function setBudget() {
+  const monthly_limit_usd = parseFloat(document.getElementById('budgetAmount').value);
+  if (!monthly_limit_usd || monthly_limit_usd <= 0) { setStatus('budgetStatus', 'أدخل رقمًا أكبر من صفر', false); return; }
+  try {
+    const data = await api('/budget/ceilings', { method: 'POST', body: JSON.stringify({ scope: 'system', monthly_limit_usd }) });
+    setStatus('budgetStatus', 'تم تعيين السقف: ' + data.monthly_limit_usd + ' دولار/شهر', true);
+  } catch (e) {
+    setStatus('budgetStatus', 'خطأ: ' + e.message, false);
+  }
+}
+
+async function loadSummary() {
+  try {
+    const data = await api('/dashboard/summary');
+    document.getElementById('summaryBox').textContent =
+      `الحملات: ${data.campaign_count} | بانتظار المراجعة: ${data.pending_review_count}\n` +
+      `التكلفة الكلية: $${data.total_cost_usd.toFixed(2)} | الإيراد: $${data.total_revenue_usd.toFixed(2)} | الربح: $${data.profit_usd.toFixed(2)}\n` +
+      `الفيديوهات حسب الحالة: ${JSON.stringify(data.video_counts_by_status)}`;
+  } catch (e) {
+    setStatus('summaryBox', 'تعذر تحميل الملخص: ' + e.message, false);
+  }
+}
+</script>
+</body>
+</html>
