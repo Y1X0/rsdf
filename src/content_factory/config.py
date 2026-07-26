@@ -105,6 +105,14 @@ class Settings(BaseSettings):
     media_backup_s3_bucket: str = ""
     media_backup_s3_prefix: str = "content-factory/media"
 
+    # --- Distributed rate limiting (Production Hardening Sprint H4, S2/SC1) ---
+    # "memory" (default) preserves Phase 1/2's exact existing behavior —
+    # correct for a single worker process, silently *not* shared across
+    # more than one. "redis" is required the moment WEB_CONCURRENCY (or
+    # replica count) is raised above 1 — see docs/DEPLOYMENT.md §6.
+    rate_limit_backend: str = "memory"  # "memory" | "redis"
+    redis_url: str = ""
+
     def resolved_llm_provider(self) -> str:
         """Fall back to the fake provider if no key is configured, regardless
         of what LLM_PROVIDER says — prevents the app crashing on missing

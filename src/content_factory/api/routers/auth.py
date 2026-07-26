@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from content_factory.api.deps import get_auth_rate_limiter
 from content_factory.auth.jwt_service import create_access_token
-from content_factory.auth.rate_limiter import FixedWindowRateLimiter
+from content_factory.auth.rate_limiter import RateLimiter
 from content_factory.config import Settings, get_settings
 from content_factory.schemas.auth import TokenRequest, TokenResponse
 
@@ -22,7 +22,7 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 def issue_token(
     payload: TokenRequest,
     settings: Settings = Depends(get_settings),
-    rate_limiter: FixedWindowRateLimiter = Depends(get_auth_rate_limiter),
+    rate_limiter: RateLimiter = Depends(get_auth_rate_limiter),
 ) -> TokenResponse:
     if not rate_limiter.allow():
         raise HTTPException(status_code=429, detail="Too many token requests — try again later")

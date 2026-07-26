@@ -1,18 +1,33 @@
 """Fixed-window rate limiter (PHASE1_AUDIT_v2.md N1 — "no rate limiting on
 POST /auth/token"). In-process only: a single counter shared across
-requests handled by this process. This is a deliberate, documented
-simplification, not a hidden gap — a multi-worker or multi-instance
-deployment would need a shared store (e.g. Redis) for this to limit
-attempts across all of them; Phase 1/2's actual deployment target (a
-single trusted process) doesn't need that yet, and adding a Redis
-dependency purely for this would be exactly the kind of premature
-infrastructure this codebase has consistently avoided (see docs/PHASE1.md's
-"modular monolith, not microservices" rationale).
+requests handled by *this* process. This was an accepted, documented
+simplification through Phase 1/2 (a single trusted process didn't need
+more), but the production readiness review correctly flagged it as a real
+gap the moment more than one worker process is run: the effective limit
+becomes `configured_limit * worker_count`, silently.
+
+Production Hardening Sprint H4 closes this with a real, swappable
+alternative — see `redis_rate_limiter.py::RedisFixedWindowRateLimiter` and
+`rate_limiter_factory.py::get_auth_rate_limiter`, which resolves to this
+class by default and to the Redis-backed one when
+`RATE_LIMIT_BACKEND=redis` is configured (required the moment
+`WEB_CONCURRENCY`/replica count is raised above 1 — see
+docs/DEPLOYMENT.md §6). This class itself is unchanged and remains the
+correct choice for genuinely single-process deployments.
 """
 
 import time
 from collections import deque
 from threading import Lock
+from typing import Protocol
+
+
+class RateLimiter(Protocol):
+    """Structural type both FixedWindowRateLimiter and
+    RedisFixedWindowRateLimiter satisfy — the only thing any caller
+    (api/routers/auth.py) actually depends on."""
+
+    def allow(self) -> bool: ...
 
 
 class FixedWindowRateLimiter:

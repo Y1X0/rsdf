@@ -112,6 +112,39 @@ Redis-backed limiter (Production Hardening Sprint H4,
 service is already configured to use it (`RATE_LIMIT_BACKEND: redis`,
 `WEB_CONCURRENCY: "2"`) as the reference example.
 
+**Provider singletons** (`api/deps.py`'s `@lru_cache`-wrapped
+`_llm_client_singleton`, `_tts_provider_singleton`,
+`_video_renderer_singleton`, `_notification_provider_singleton`,
+`_media_backup_provider_singleton`) are safe as-is under multiple workers
+and don't need a Redis-style fix, for a different reason than the rate
+limiter: `@lru_cache` only caches one instance *per process* (each
+`uvicorn` worker is a separate OS process, so each gets its own singleton
+— there's no cross-worker sharing to worry about in the first place), and
+every provider class itself holds no mutable, request-scoped state — each
+one is constructed once from `Settings` (API keys, storage paths,
+webhook URLs) and every subsequent call is a pure function of its
+arguments (`LLMClient.generate(prompt)`, `TTSProvider.synthesize(text)`,
+etc.), writing only to append-only external resources (an API call, a
+file under a per-render unique path, an S3 upload). This is structurally
+different from the old in-process rate limiter, whose entire purpose was
+to accumulate mutable counter state across calls — that's the one
+singleton in this codebase that actually needed cross-worker
+coordination, and it's the one that got it (Redis). No code change was
+needed here; this section exists so a future contributor doesn't have to
+re-derive the same conclusion from scratch.
+
+**Budget governor** (`services/budget_governor.py::enforce_budget`) takes
+a Postgres advisory lock (`pg_advisory_xact_lock`, transaction-scoped)
+before checking a ceiling, closing a check-then-spend race where
+concurrent requests against the same ceiling (across workers, or even
+within one worker's concurrent async handlers) could each read
+"under ceiling" before any of them committed — see
+`tests/unit/test_budget_governor_concurrency.py` for a real-Postgres,
+real-threads regression test proving the fix. This lock is a no-op
+against the SQLite fixture every other test uses, and against any
+non-Postgres `DATABASE_URL` — it only activates against a real Postgres
+connection, which is what production must use anyway (§3 above).
+
 ## 7. Environment separation
 
 Nothing in this codebase enforces dev/staging/production separation beyond

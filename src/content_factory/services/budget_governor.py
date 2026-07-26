@@ -22,7 +22,7 @@ same month don't re-alert.
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy import func
+from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
 from content_factory.db.models.analytics import CostLedger
@@ -36,6 +36,34 @@ from content_factory.notifications.base import NotificationProvider, Notificatio
 logger = get_logger(__name__)
 
 ALERT_THRESHOLDS = (0.5, 0.8, 0.95, 1.0)
+
+
+def _acquire_budget_lock(db: Session, *, scope: BudgetScope, niche_id: int | None) -> None:
+    """Production Hardening Sprint H4 — closes the production readiness
+    review's D2/C1 finding: `check_budget` used to be a plain read with no
+    locking, so concurrent requests against the same ceiling could all
+    read "under ceiling" before any of them committed their spend,
+    cumulatively overshooting it. `pg_advisory_xact_lock` is
+    transaction-scoped (auto-releases at this request's own commit/
+    rollback, via api/deps.py::get_db) and keyed by (scope, niche_id), so
+    concurrent requests against the *same* ceiling now serialize around
+    the check-then-spend window — the next request to acquire the lock
+    always sees the previous one's already-committed spend, not a stale
+    pre-commit snapshot.
+
+    Deliberate tradeoff: this serializes the *entire* remainder of the
+    request (not just the budget check) for concurrent callers sharing a
+    ceiling, trading some throughput for the ceiling actually being a hard
+    limit rather than a soft one — the right tradeoff for a financial
+    guardrail. A no-op on SQLite (advisory locks are a Postgres-only
+    feature) — every unit/API test using the in-memory SQLite fixture is
+    completely unaffected; this only activates against a real Postgres
+    connection.
+    """
+    if db.bind is None or db.bind.dialect.name != "postgresql":
+        return
+    lock_key = f"budget:{scope.value}:{niche_id if niche_id is not None else 'system'}"
+    db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": lock_key})
 
 
 class BudgetExceeded(Exception):
@@ -148,7 +176,18 @@ def enforce_budget(
 ) -> list[BudgetStatus]:
     """Fires any newly-crossed alerts, then raises BudgetExceeded if any
     applicable ceiling is at or past 100%. Returns the checked statuses on
-    success (informational — callers don't need to do anything with them)."""
+    success (informational — callers don't need to do anything with them).
+
+    Acquires the advisory lock(s) for the applicable scope(s) *before*
+    checking, so concurrent callers against the same ceiling serialize
+    around the check-then-spend window (see `_acquire_budget_lock`).
+    `check_budget` itself stays lock-free since `GET /budget/status` also
+    calls it directly for a read-only status check, which shouldn't block
+    on — or be blocked by — an in-flight spend."""
+    _acquire_budget_lock(db, scope=BudgetScope.SYSTEM, niche_id=None)
+    if niche_id is not None:
+        _acquire_budget_lock(db, scope=BudgetScope.NICHE, niche_id=niche_id)
+
     statuses = check_budget(db, niche_id=niche_id)
     for status in statuses:
         _maybe_alert(db, status, notification_provider)

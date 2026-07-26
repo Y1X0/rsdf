@@ -13,7 +13,8 @@ from functools import lru_cache
 
 from sqlalchemy.orm import Session
 
-from content_factory.auth.rate_limiter import FixedWindowRateLimiter
+from content_factory.auth.rate_limiter import RateLimiter
+from content_factory.auth.rate_limiter_factory import get_auth_rate_limiter as _build_auth_rate_limiter
 from content_factory.config import get_settings
 from content_factory.db.base import SessionLocal
 from content_factory.llm.base import LLMClient
@@ -76,19 +77,15 @@ def _notification_provider_singleton() -> NotificationProvider:
 
 
 @lru_cache
-def _auth_rate_limiter_singleton() -> FixedWindowRateLimiter:
-    settings = get_settings()
-    return FixedWindowRateLimiter(
-        max_attempts=settings.auth_token_rate_limit_max_attempts,
-        window_seconds=settings.auth_token_rate_limit_window_seconds,
-    )
+def _auth_rate_limiter_singleton() -> RateLimiter:
+    return _build_auth_rate_limiter(get_settings())
 
 
 def get_notification_provider() -> NotificationProvider:
     return _notification_provider_singleton()
 
 
-def get_auth_rate_limiter() -> FixedWindowRateLimiter:
+def get_auth_rate_limiter() -> RateLimiter:
     return _auth_rate_limiter_singleton()
 
 
