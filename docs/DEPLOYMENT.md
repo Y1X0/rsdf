@@ -176,10 +176,16 @@ larger follow-up beyond this sprint's scope (see
 
 ## 9. Observability endpoints
 
-- `GET /health` — liveness + DB connectivity check.
+- `GET /health` — liveness + per-dependency connectivity checks (database
+  always; Redis too, when `RATE_LIMIT_BACKEND=redis` is actually
+  configured) — `200` with `{"status": "ok", "checks": {...}}`, or `503`
+  the moment any configured dependency is unreachable.
 - `GET /metrics` — Prometheus exposition format (Production Hardening
   Sprint H6), present whenever the `observability` extra is installed;
   absent (404) otherwise, never a hard dependency.
+- Every response carries an `X-Request-ID` header (echoing the caller's,
+  if one was sent) — every log line emitted while handling that request
+  is tagged with the same ID, so the two correlate.
 - Structured JSON logs to stdout — see `logging_config.py`; ship these via
   whatever your platform provides for stdout capture (CloudWatch Logs,
   Cloud Logging, a Fluent Bit sidecar, etc.) — nothing in this codebase

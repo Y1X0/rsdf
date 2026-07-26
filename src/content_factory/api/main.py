@@ -1,3 +1,6 @@
+import uuid
+
+import structlog
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
@@ -18,24 +21,51 @@ from content_factory.api.routers import (
 from content_factory.config import get_settings
 from content_factory.db.base import engine
 from content_factory.logging_config import configure_logging, get_logger
+from content_factory.observability import configure_error_tracking, configure_metrics
 from content_factory.services.budget_governor import BudgetExceeded
 from content_factory.services.idempotency import IdempotencyConflict, IdempotencyInProgress
 
 logger = get_logger(__name__)
 
+REQUEST_ID_HEADER = "X-Request-ID"
+
 
 def create_app() -> FastAPI:
     configure_logging()
+    settings = get_settings()
     # Production Hardening Sprint H1: boot-time fail-closed check — see
     # Settings.validate_production_safety's own docstring for why this
     # exists. A no-op unless ENVIRONMENT=production is explicitly set.
-    get_settings().validate_production_safety()
+    settings.validate_production_safety()
+    # Production Hardening Sprint H6: both are no-ops unless configured/
+    # installed — see observability.py's own docstring.
+    configure_error_tracking(settings)
 
     app = FastAPI(
         title="AI Content Factory",
         description="Whop Content Rewards content pipeline. See docs/ARCHITECTURE.md and docs/PHASE1.md.",
         version="2.0.0",
     )
+
+    @app.middleware("http")
+    async def _request_id_correlation(request: Request, call_next):
+        """Production Hardening Sprint H6: binds a request ID to every
+        structlog event emitted while handling this request (via
+        structlog's contextvars, already wired into logging_config.py's
+        processor chain), so every log line from one HTTP request —
+        across routers, services, and agents — can be grepped together.
+        Accepts an inbound X-Request-ID (so a caller/gateway can supply
+        its own trace ID) or generates one; always echoes it back in the
+        response header either way."""
+        request_id = request.headers.get(REQUEST_ID_HEADER) or str(uuid.uuid4())
+        structlog.contextvars.clear_contextvars()
+        structlog.contextvars.bind_contextvars(request_id=request_id)
+        try:
+            response = await call_next(request)
+        finally:
+            structlog.contextvars.clear_contextvars()
+        response.headers[REQUEST_ID_HEADER] = request_id
+        return response
 
     app.include_router(auth.router)
     app.include_router(campaigns.router)
@@ -83,13 +113,40 @@ def create_app() -> FastAPI:
         # shouldn't share transaction state with business requests, and
         # this way a failed check can't leave a session in an aborted-
         # transaction state for anything else to trip over.
+        checks: dict[str, str] = {}
+
         try:
             with engine.connect() as conn:
                 conn.execute(text("SELECT 1"))
+            checks["database"] = "ok"
         except Exception:
             logger.error("health_check_db_failed", exc_info=True)
-            return JSONResponse(status_code=503, content={"status": "unhealthy", "reason": "database unreachable"})
-        return {"status": "ok"}
+            checks["database"] = "unreachable"
+
+        # Production Hardening Sprint H6: only checked when Redis is
+        # actually part of this deployment's configuration (the rate
+        # limiter backend) — an unconfigured Redis isn't a health problem,
+        # it's just not in use (see auth/rate_limiter_factory.py).
+        current_settings = get_settings()
+        if current_settings.rate_limit_backend == "redis" and current_settings.redis_url:
+            try:
+                import redis
+
+                redis.Redis.from_url(current_settings.redis_url).ping()
+                checks["redis"] = "ok"
+            except Exception:
+                logger.error("health_check_redis_failed", exc_info=True)
+                checks["redis"] = "unreachable"
+
+        if any(status == "unreachable" for status in checks.values()):
+            return JSONResponse(status_code=503, content={"status": "unhealthy", "checks": checks})
+        return {"status": "ok", "checks": checks}
+
+    # Instrumented last (Production Hardening Sprint H6), after every other
+    # route is registered — prometheus-fastapi-instrumentator's own
+    # documented recommendation, so it sees the app's complete route table
+    # when it exposes /metrics.
+    configure_metrics(app, settings)
 
     return app
 

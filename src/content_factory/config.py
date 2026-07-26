@@ -113,6 +113,16 @@ class Settings(BaseSettings):
     rate_limit_backend: str = "memory"  # "memory" | "redis"
     redis_url: str = ""
 
+    # --- Observability (Production Hardening Sprint H6) ---
+    # Metrics are on by default (no secret involved, standard ops
+    # practice) but only actually mounted if the `observability` extra is
+    # installed — see api/main.py. Error tracking is opt-in: sentry_dsn
+    # has no safe default, so Sentry stays fully inactive (and
+    # sentry_sdk is never even imported) until an operator sets it.
+    metrics_enabled: bool = True
+    sentry_dsn: str = ""
+    sentry_traces_sample_rate: float = 0.0
+
     def resolved_llm_provider(self) -> str:
         """Fall back to the fake provider if no key is configured, regardless
         of what LLM_PROVIDER says — prevents the app crashing on missing
