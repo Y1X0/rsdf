@@ -23,6 +23,10 @@ from content_factory.notifications.base import NotificationProvider
 from content_factory.notifications.factory import get_notification_provider as _build_notification_provider
 from content_factory.services.media_backup import MediaBackupProvider
 from content_factory.services.media_backup import get_media_backup_provider as _build_media_backup_provider
+from content_factory.transcription.base import TranscriptionProvider
+from content_factory.transcription.factory import get_transcription_provider as _build_transcription_provider
+from content_factory.video_clipping.base import ClipRenderer
+from content_factory.video_clipping.factory import get_clip_renderer as _build_clip_renderer
 from content_factory.video_production.renderer.base import VideoRenderer
 from content_factory.video_production.renderer.factory import get_video_renderer as _build_video_renderer
 from content_factory.video_production.tts.base import TTSProvider
@@ -96,3 +100,21 @@ def _media_backup_provider_singleton() -> MediaBackupProvider:
 
 def get_media_backup_provider() -> MediaBackupProvider:
     return _media_backup_provider_singleton()
+
+
+@lru_cache
+def _transcription_provider_singleton() -> TranscriptionProvider:
+    return _build_transcription_provider(get_settings())
+
+
+@lru_cache
+def _clip_renderer_singleton() -> ClipRenderer:
+    return _build_clip_renderer(get_settings())
+
+
+def get_transcription_provider() -> TranscriptionProvider:
+    return _transcription_provider_singleton()
+
+
+def get_clip_renderer() -> ClipRenderer:
+    return _clip_renderer_singleton()

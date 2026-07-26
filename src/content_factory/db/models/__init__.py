@@ -6,6 +6,7 @@ from content_factory.db.models.agent_run import AgentRun
 from content_factory.db.models.analytics import CostLedger, MetricsSnapshot, RevenueSnapshot, ViralScoreRecord
 from content_factory.db.models.budget import BudgetCeiling, ProviderQuotaUsage
 from content_factory.db.models.campaign import Campaign, CampaignScore
+from content_factory.db.models.clip import Clip
 from content_factory.db.models.content import ContentIdea, ResearchBrief, Script
 from content_factory.db.models.experiment import Experiment, ExperimentResult
 from content_factory.db.models.hook import HookLibrary, LearningPattern
@@ -15,6 +16,7 @@ from content_factory.db.models.notification import NotificationLog
 from content_factory.db.models.publication import Publication
 from content_factory.db.models.quality import QualityScore
 from content_factory.db.models.review import ReviewDecision
+from content_factory.db.models.source_video import SourceVideo
 from content_factory.db.models.video import Video
 
 __all__ = [
@@ -23,6 +25,7 @@ __all__ = [
     "BudgetCeiling",
     "Campaign",
     "CampaignScore",
+    "Clip",
     "ContentIdea",
     "CostLedger",
     "Experiment",
@@ -41,6 +44,7 @@ __all__ = [
     "RevenueSnapshot",
     "ReviewDecision",
     "Script",
+    "SourceVideo",
     "Video",
     "ViralScoreRecord",
 ]

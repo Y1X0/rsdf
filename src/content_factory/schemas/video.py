@@ -25,7 +25,8 @@ class VideoOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
-    script_id: int
+    script_id: int | None
+    clip_id: int | None
     status: VideoStatus
     template_id: str | None
     render_status: ProcessingStatus

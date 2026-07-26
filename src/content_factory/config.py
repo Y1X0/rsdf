@@ -41,6 +41,19 @@ class Settings(BaseSettings):
     renderer_backend: str = "null"  # "template_pillow" | "null"
     media_storage_dir: str = "./var/media"
 
+    # --- Clip factory (long-form video -> short-clip montage) ---
+    # Transcription: "null" (default) returns an empty transcript with no
+    # external call; "groq" uses Groq's Whisper endpoint (reuses the same
+    # GROQ_API_KEY as the LLM provider above).
+    transcription_provider: str = "null"  # "groq" | "null"
+    groq_whisper_model: str = "whisper-large-v3"
+    # Clip rendering: "null" (default) writes a manifest referencing the cut
+    # range instead of a real video file, so the pipeline works without
+    # ffmpeg installed; "ffmpeg" actually cuts the source video (needs the
+    # "rendering" extra: pip install '.[rendering]', same imageio-ffmpeg
+    # bundled binary TemplatePillowRenderer already uses).
+    clip_renderer_backend: str = "null"  # "ffmpeg" | "null"
+
     # --- Auth (v1.1, PHASE1_AUDIT.md F2) ---
     # No user database in Phase 1 — a small, fixed set of pre-shared service
     # credentials is issued JWTs, matching the actual single-operator usage
@@ -145,6 +158,11 @@ class Settings(BaseSettings):
         if self.tts_provider == "elevenlabs" and not self.elevenlabs_api_key:
             return "silent"
         return self.tts_provider
+
+    def resolved_transcription_provider(self) -> str:
+        if self.transcription_provider == "groq" and not self.groq_api_key:
+            return "null"
+        return self.transcription_provider
 
     def resolved_notification_provider(self) -> str:
         if self.notification_provider == "slack" and not self.slack_webhook_url:

@@ -6,9 +6,13 @@
 # isolated venv, which the runtime stage copies verbatim — the runtime
 # image never has a C compiler or build headers in it.
 #
-# Does NOT install the optional "rendering"/"elevenlabs" extras (see
-# requirements-lock.txt's own note) — this image runs with NullRenderer/
-# SilentTTSProvider unless you rebuild with those extras added.
+# Includes the "rendering" extra (Pillow/imageio-ffmpeg) via
+# requirements-lock.txt, since real ffmpeg cutting is core to the clip
+# factory pipeline (services/clip_service.py) — set CLIP_RENDERER_BACKEND=
+# ffmpeg to use it (defaults to "null", matching every other provider's
+# safe-by-default contract). Does NOT include the optional "elevenlabs"
+# extra — this image still runs with SilentTTSProvider unless rebuilt with
+# that extra added.
 
 FROM python:3.11-slim AS builder
 
@@ -29,9 +33,15 @@ RUN pip install --no-cache-dir --no-deps .
 FROM python:3.11-slim AS runtime
 
 # libpq5 is the psycopg2-binary runtime dependency; curl is used only by
-# the HEALTHCHECK below.
+# the HEALTHCHECK below. fontconfig + fonts-liberation are needed for the
+# ffmpeg clip renderer's burned-in captions/hook text (the `subtitles`
+# filter, via libass, needs a real font to resolve at render time — verified
+# locally that libass picks up Liberation Sans as its default match); a bare
+# python:3.11-slim has no fonts installed at all, so without this the same
+# render that works in local dev would silently fail or render blank text
+# once deployed.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libpq5 curl \
+    && apt-get install -y --no-install-recommends libpq5 curl fontconfig fonts-liberation \
     && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd --system app && useradd --system --gid app --no-create-home app

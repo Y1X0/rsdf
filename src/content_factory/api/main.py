@@ -12,6 +12,7 @@ from content_factory.api.routers import (
     auth,
     budget,
     campaigns,
+    clips,
     content,
     dashboard,
     experimentation,
@@ -79,6 +80,7 @@ def create_app() -> FastAPI:
     app.include_router(accounts.router)
     app.include_router(publications.router)
     app.include_router(experimentation.router)
+    app.include_router(clips.router)
 
     @app.exception_handler(IdempotencyConflict)
     def _handle_idempotency_conflict(request: Request, exc: IdempotencyConflict) -> JSONResponse:

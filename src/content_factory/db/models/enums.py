@@ -139,3 +139,15 @@ class ExperimentSubjectType(str, enum.Enum):
     NICHE = "niche"
     LENGTH_BUCKET = "length_bucket"
     POSTING_TIME_BUCKET = "posting_time_bucket"
+
+
+class ClipStatus(str, enum.Enum):
+    """A clip's own lifecycle, distinct from Video.status — a clip starts
+    as an AI-suggested moment in a longer source video and either gets
+    rendered (creating a real Video row that then flows through the
+    existing render/review/publish pipeline unchanged) or rejected without
+    ever being cut."""
+
+    SUGGESTED = "suggested"
+    RENDERED = "rendered"
+    REJECTED = "rejected"

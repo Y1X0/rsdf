@@ -11,12 +11,14 @@
 #   pip install -e ".[dev,production]"
 #   pip freeze --exclude-editable > requirements-lock.txt
 #
-# Does NOT include the optional "rendering" or "elevenlabs" extras (Pillow/
-# imageio-ffmpeg, and elevenlabs' own httpx dependency is already covered) —
-# neither is exercised by the test suite (see docs/PHASE1.md's known
-# limitations) and both meaningfully grow the image; install them
-# separately (`pip install -r requirements-lock.txt -e ".[rendering]"`) if
-# you actually need real TTS/rendering rather than the null/silent defaults.
+# Includes the "rendering" extra's two packages (Pillow, imageio-ffmpeg) —
+# real ffmpeg cutting/caption-burning is core to the clip factory pipeline
+# (services/clip_service.py, video_clipping/providers/ffmpeg_clip_renderer.py),
+# not an optional nicety like TemplatePillowRenderer still is, so both are
+# pinned here rather than left out. Does NOT include the "elevenlabs" extra
+# (its own httpx dependency is already covered transitively via anthropic) —
+# real TTS still needs `pip install -r requirements-lock.txt -e ".[elevenlabs]"`
+# separately.
 alembic==1.18.5
 annotated-doc==0.0.4
 annotated-types==0.8.0
@@ -44,6 +46,7 @@ httpcore==1.0.9
 httptools==0.8.0
 httpx==0.28.1
 idna==3.18
+imageio-ffmpeg==0.6.0
 iniconfig==2.3.0
 jiter==0.16.0
 jmespath==1.1.0
@@ -55,6 +58,7 @@ mdurl==0.1.2
 msgpack==1.2.1
 packageurl-python==0.17.6
 packaging==26.2
+Pillow==12.3.0
 pip-api==0.0.34
 pip-requirements-parser==32.0.1
 pip_audit==2.10.1
@@ -75,6 +79,7 @@ pytest==9.1.1
 pytest-asyncio==1.4.0
 python-dateutil==2.9.0.post0
 python-dotenv==1.2.2
+python-multipart==0.0.32
 PyYAML==6.0.3
 redis==8.0.1
 requests==2.34.2

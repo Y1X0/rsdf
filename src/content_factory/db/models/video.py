@@ -23,7 +23,14 @@ class Video(TimestampMixin, Base):
     __tablename__ = "videos"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    script_id: Mapped[int] = mapped_column(ForeignKey("scripts.id"), index=True)
+    # Nullable as of the clip-factory addition: a Video now originates from
+    # either a Script (AI-written-from-scratch pipeline, script_id set) or a
+    # Clip (real-footage montage pipeline, clip_id set) — exactly one of the
+    # two, enforced in services/clip_service.py and production_service.py
+    # respectively rather than as a DB constraint, matching this codebase's
+    # existing style of enforcing invariants in the service layer.
+    script_id: Mapped[int | None] = mapped_column(ForeignKey("scripts.id"), nullable=True, index=True)
+    clip_id: Mapped[int | None] = mapped_column(ForeignKey("clips.id"), nullable=True, index=True)
 
     # v1.1 (PHASE1_AUDIT.md F6): indexed — filtered directly in
     # list_pending_review's WHERE clause and grouped by in the dashboard
@@ -62,7 +69,8 @@ class Video(TimestampMixin, Base):
         ForeignKey("agent_runs.id"), nullable=True
     )
 
-    script: Mapped["Script"] = relationship(back_populates="videos")  # noqa: F821
+    script: Mapped["Script | None"] = relationship(back_populates="videos")  # noqa: F821
+    clip: Mapped["Clip | None"] = relationship(back_populates="video")  # noqa: F821
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"Video(id={self.id}, status={self.status})"

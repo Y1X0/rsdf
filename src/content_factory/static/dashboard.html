@@ -129,9 +129,40 @@
   <h2 style="margin-top:18px">د. إنتاج الفيديو (Render)</h2>
   <button onclick="renderVideo()">إنتاج الفيديو</button>
   <div id="renderStatus" class="status-line"></div>
-  <div class="current">الفيديو الناتج: <b id="curVideo">لا يوجد</b></div>
+  <div class="current">الفيديو الناتج: <b id="curVideo">لا يوجد</b> — أكمل المراجعة والنشر في البطاقة أدناه</div>
+</div>
 
-  <h2 style="margin-top:18px">هـ. المراجعة البشرية (مطلوبة قبل النشر)</h2>
+<!-- Clip factory: long-form video -> AI-selected real short clips -->
+<div class="card disabled" id="clipFactoryCard">
+  <h2>المونتاج التلقائي (فيديو طويل → مقاطع قصيرة)</h2>
+  <div class="sub">ارفع فيديو طويل (بودكاست، بث، مقابلة...)، والذكاء الاصطناعي يفهمه ويختار أفضل اللقطات ويقصّها فعليًا مع ترجمة وهوك.</div>
+
+  <label>عنوان الفيديو</label>
+  <input id="sourceVideoTitle" placeholder="مثال: حلقة بودكاست 12">
+  <label>ملف الفيديو</label>
+  <input id="sourceVideoFile" type="file" accept="video/*">
+  <button onclick="uploadSourceVideo()">رفع الفيديو</button>
+  <button class="secondary" onclick="listSourceVideos()">تحديث القائمة</button>
+  <div id="sourceVideoStatus" class="status-line"></div>
+  <table id="sourceVideosTable"><thead><tr><th>ID</th><th>العنوان</th><th>حالة التفريغ النصي</th></tr></thead><tbody></tbody></table>
+  <div class="current">الفيديو المحدد: <b id="curSourceVideo">لا يوجد</b> — اضغط على صف لاختياره</div>
+
+  <button onclick="transcribeSourceVideo()">1. تفريغ الصوت نصيًا (Transcribe)</button>
+  <button onclick="analyzeSourceVideo()">2. تحليل واختيار أفضل اللقطات (AI)</button>
+  <div id="analyzeStatus" class="status-line"></div>
+
+  <table id="clipsTable"><thead><tr><th>ID</th><th>البداية</th><th>النهاية</th><th>الهوك</th><th>التقييم المتوقع</th></tr></thead><tbody></tbody></table>
+  <div class="current">المقطع المحدد: <b id="curClip">لا يوجد</b></div>
+  <button onclick="renderClip()">3. قصّ المقطع فعليًا وإضافة الترجمة</button>
+  <div id="clipRenderStatus" class="status-line"></div>
+</div>
+
+<!-- Shared review/publish - works for a video from either the script pipeline or the clip factory -->
+<div class="card disabled" id="reviewPublishCard">
+  <h2>مراجعة ونشر الفيديو</h2>
+  <div class="current">الفيديو الحالي: <b id="curVideoShared">لا يوجد</b></div>
+
+  <h2 style="margin-top:18px">المراجعة البشرية (مطلوبة قبل النشر)</h2>
   <div class="grid2">
     <div>
       <label>القرار</label>
@@ -151,7 +182,7 @@
   <button onclick="submitReview()">إرسال قرار المراجعة</button>
   <div id="reviewStatus" class="status-line"></div>
 
-  <h2 style="margin-top:18px">و. النشر (Publish)</h2>
+  <h2 style="margin-top:18px">النشر (Publish)</h2>
   <div class="grid2">
     <div>
       <label>Account ID (من /accounts)</label>
@@ -191,7 +222,7 @@
 
 <script>
 let token = null;
-let state = { campaignId: null, ideaId: null, scriptId: null, videoId: null };
+let state = { campaignId: null, ideaId: null, scriptId: null, videoId: null, sourceVideoId: null, clipId: null };
 
 function log(msg) {
   const el = document.getElementById('log');
@@ -207,7 +238,8 @@ function setStatus(elId, text, ok) {
 
 async function api(path, options = {}) {
   const headers = options.headers || {};
-  headers['Content-Type'] = 'application/json';
+  const isFormData = options.body instanceof FormData;
+  if (!isFormData) headers['Content-Type'] = 'application/json';
   if (token) headers['Authorization'] = 'Bearer ' + token;
   const res = await fetch(path, { ...options, headers });
   let body;
@@ -235,8 +267,10 @@ async function login() {
     document.getElementById('loginBadge').className = 'pill ok';
     unlock('campaignsCard');
     unlock('budgetCard');
+    unlock('clipFactoryCard');
     await listCampaigns();
     await loadSummary();
+    await listSourceVideos();
   } catch (e) {
     setStatus('loginStatus', 'فشل تسجيل الدخول: ' + e.message, false);
   }
@@ -359,11 +393,107 @@ async function renderVideo() {
   if (!state.scriptId) { setStatus('renderStatus', 'اختر سكريبت أولًا', false); return; }
   try {
     const data = await api(`/scripts/${state.scriptId}/render`, { method: 'POST', body: JSON.stringify({}) });
-    state.videoId = data.id;
-    document.getElementById('curVideo').textContent = `#${data.id}`;
+    setCurrentVideo(data.id);
     setStatus('renderStatus', `الحالة: ${data.render_status} — الملف: ${data.asset_url || '(manifest فقط، بدون renderer حقيقي)'}`, true);
   } catch (e) {
     setStatus('renderStatus', 'خطأ: ' + e.message, false);
+  }
+}
+
+function setCurrentVideo(videoId) {
+  state.videoId = videoId;
+  document.getElementById('curVideo').textContent = `#${videoId}`;
+  document.getElementById('curVideoShared').textContent = `#${videoId}`;
+  unlock('reviewPublishCard');
+}
+
+async function uploadSourceVideo() {
+  const title = document.getElementById('sourceVideoTitle').value.trim();
+  const fileInput = document.getElementById('sourceVideoFile');
+  const file = fileInput.files[0];
+  if (!title || !file) { setStatus('sourceVideoStatus', 'العنوان والملف مطلوبان', false); return; }
+  try {
+    setStatus('sourceVideoStatus', 'جارٍ الرفع...', null);
+    const form = new FormData();
+    form.append('title', title);
+    form.append('file', file);
+    const data = await api('/source-videos', { method: 'POST', body: form });
+    setStatus('sourceVideoStatus', 'تم رفع الفيديو رقم ' + data.id, true);
+    await listSourceVideos();
+    selectSourceVideo(data.id, data.title);
+  } catch (e) {
+    setStatus('sourceVideoStatus', 'خطأ: ' + e.message, false);
+  }
+}
+
+async function listSourceVideos() {
+  try {
+    const data = await api('/source-videos?limit=50');
+    const tbody = document.querySelector('#sourceVideosTable tbody');
+    tbody.innerHTML = '';
+    data.forEach(v => {
+      const tr = document.createElement('tr');
+      tr.className = 'row-selectable';
+      tr.innerHTML = `<td>${v.id}</td><td>${v.title}</td><td>${v.transcription_status}</td>`;
+      tr.onclick = () => selectSourceVideo(v.id, v.title);
+      tbody.appendChild(tr);
+    });
+  } catch (e) {
+    setStatus('sourceVideoStatus', 'تعذر تحميل القائمة: ' + e.message, false);
+  }
+}
+
+function selectSourceVideo(id, title) {
+  state.sourceVideoId = id;
+  document.getElementById('curSourceVideo').textContent = `#${id} (${title})`;
+}
+
+async function transcribeSourceVideo() {
+  if (!state.sourceVideoId) { setStatus('analyzeStatus', 'اختر فيديو أولًا', false); return; }
+  try {
+    setStatus('analyzeStatus', 'جارٍ تفريغ الصوت نصيًا...', null);
+    const data = await api(`/source-videos/${state.sourceVideoId}/transcribe`, { method: 'POST', body: JSON.stringify({}) });
+    setStatus('analyzeStatus', 'اكتمل التفريغ النصي: ' + data.transcription_status, true);
+    await listSourceVideos();
+  } catch (e) {
+    setStatus('analyzeStatus', 'خطأ: ' + e.message, false);
+  }
+}
+
+async function analyzeSourceVideo() {
+  if (!state.sourceVideoId) { setStatus('analyzeStatus', 'اختر فيديو أولًا', false); return; }
+  try {
+    setStatus('analyzeStatus', 'جارٍ تحليل الفيديو واختيار أفضل اللقطات...', null);
+    const data = await api(`/source-videos/${state.sourceVideoId}/analyze`, { method: 'POST', body: JSON.stringify({ max_clips: 5 }) });
+    setStatus('analyzeStatus', 'تم اقتراح ' + data.length + ' مقطع', true);
+    const tbody = document.querySelector('#clipsTable tbody');
+    tbody.innerHTML = '';
+    data.forEach(c => {
+      const tr = document.createElement('tr');
+      tr.className = 'row-selectable';
+      tr.innerHTML = `<td>${c.id}</td><td>${c.start_s.toFixed(1)}s</td><td>${c.end_s.toFixed(1)}s</td><td>${c.hook_text || ''}</td><td>${c.predicted_score ?? ''}</td>`;
+      tr.onclick = () => selectClip(c.id);
+      tbody.appendChild(tr);
+    });
+  } catch (e) {
+    setStatus('analyzeStatus', 'خطأ: ' + e.message, false);
+  }
+}
+
+function selectClip(id) {
+  state.clipId = id;
+  document.getElementById('curClip').textContent = `#${id}`;
+}
+
+async function renderClip() {
+  if (!state.clipId) { setStatus('clipRenderStatus', 'اختر مقطعًا أولًا', false); return; }
+  try {
+    setStatus('clipRenderStatus', 'جارٍ قصّ المقطع وإضافة الترجمة...', null);
+    const data = await api(`/clips/${state.clipId}/render`, { method: 'POST', body: JSON.stringify({}) });
+    setCurrentVideo(data.id);
+    setStatus('clipRenderStatus', `تم — الحالة: ${data.render_status}، المدة: ${data.duration_s}s، الملف: ${data.asset_url}. أكمل المراجعة والنشر أدناه.`, true);
+  } catch (e) {
+    setStatus('clipRenderStatus', 'خطأ: ' + e.message, false);
   }
 }
 
