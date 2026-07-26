@@ -922,6 +922,11 @@ Supplementary stores:
 
 ## 13. API Integrations Needed
 
+See `docs/PROVIDER_VERIFICATION_PLAN.md` (Production Hardening Sprint H7)
+for the concrete sandbox/live verification checklist for TikTok, YouTube,
+and Instagram — the constraints below are why none of the three has been
+exercised against a live API yet.
+
 | Integration | Purpose | Known constraints |
 |---|---|---|
 | **Whop** | Campaign discovery, submission, earnings | No confirmed public Content Rewards API — verify directly with Whop; design assumes dashboard scraping/semi-manual until confirmed |
