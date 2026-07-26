@@ -100,3 +100,13 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# Without this, a regular (non-editable) `pip install .` — what the
+# Dockerfile's builder stage actually runs — silently drops non-.py files
+# like static/dashboard.html from the built package: setuptools only
+# includes source files under discovered packages by default. Local dev
+# never notices because `pip install -e .` imports straight from src/ on
+# disk, where the file is always physically present regardless of this
+# setting.
+[tool.setuptools.package-data]
+content_factory = ["static/*.html"]
