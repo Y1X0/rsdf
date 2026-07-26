@@ -34,12 +34,21 @@ jobs:
 
     env:
       DATABASE_URL: postgresql+psycopg2://content_factory:content_factory@localhost:5432/content_factory
-      # Test-only credentials, matching tests/conftest.py's own — never
-      # reused for anything real, only ever alive for this CI job.
+      # Test-only, never reused for anything real, only ever alive for this
+      # CI job. Deliberately does NOT set AUTH_CLIENT_ID/AUTH_CLIENT_SECRET
+      # here (Production Hardening Sprint H8 — a real bug this exact
+      # oversight caused): tests/conftest.py's `client` fixture posts a
+      # hardcoded "test-operator"/"test-operator-secret" pair to
+      # /auth/token, and only falls back to those values via
+      # `os.environ.setdefault(...)` when the env var isn't *already* set.
+      # Setting a *different* pair here pre-empts that default and makes
+      # every authenticated test fail with 401 "Invalid client
+      # credentials" — which is exactly what happened on every run of this
+      # workflow until this fix. JWT_SECRET_KEY has no such hardcoded
+      # counterpart anywhere in the test suite, so overriding it here is
+      # safe.
       JWT_SECRET_KEY: ci-test-jwt-secret-do-not-use-in-production
       JWT_EXPIRES_MINUTES: "60"
-      AUTH_CLIENT_ID: ci-operator
-      AUTH_CLIENT_SECRET: ci-operator-secret
 
     steps:
       - uses: actions/checkout@v4
