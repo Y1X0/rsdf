@@ -1,14 +1,15 @@
 """database optimization (Production Hardening Sprint H5)
 
-Adds the hot-path indexes the production readiness review's DB1 finding
+Adds the hot-path indexes the production readiness review's D1 finding
 flagged as missing (cost_ledger.recorded_at, filtered on every
 enforce_budget call; experiment_results.is_winner, filtered by the default
 GET /experimentation/recommendations path), and replaces publications'
 three separate single-column indexes (account_id, status — published_at
 was never indexed at all) with one composite index matching the actual
-query shape in publishing_service.py's cadence-cap check. Also drops
-idempotency_records' redundant standalone scope/key indexes, superseded
-by the existing (scope, key) unique constraint's own composite index.
+query shape in publishing_service.py's cadence-cap check. Also closes D4,
+dropping idempotency_records' redundant standalone scope/key indexes,
+superseded by the existing (scope, key) unique constraint's own composite
+index.
 
 Revision ID: 0008
 Revises: 0007

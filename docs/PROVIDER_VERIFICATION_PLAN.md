@@ -1,6 +1,6 @@
 # External Provider Verification Plan
 
-Production Hardening Sprint H7 — the production readiness review's EP1
+Production Hardening Sprint H7 — the production readiness review's E3
 finding: the TikTok, YouTube, and Instagram providers (both publishing
 and metrics ingestion) are structurally complete and unit-tested against
 mocked HTTP responses (`tests/unit/test_publishing_providers.py`,

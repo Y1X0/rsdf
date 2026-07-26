@@ -1,9 +1,14 @@
 # Observability
 
 Production Hardening Sprint H6 — closes the production readiness review's
-OBS1 finding ("no metrics, no error tracking, a health check that only
-ever looked at the database, no request correlation, no alerting/log
-guidance"). Referenced from `docs/DEPLOYMENT.md`.
+M1 (no metrics), M2 (no request correlation), M3 (no error tracking), and
+M6 (no documented log-shipping story) findings, partially addresses M5
+(the health check only ever looked at the database — now also checks
+Redis when configured, though not M5's disk-space suggestion — see
+`docs/PRODUCTION_HARDENING_REPORT.md`'s remaining-risks section), and
+gives M4 (no infrastructure-level alerting) a concrete strategy
+recommendation without wiring actual paging infrastructure, which is
+inherently deployment-specific. Referenced from `docs/DEPLOYMENT.md`.
 
 ## 1. Structured application logs
 

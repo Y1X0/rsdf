@@ -1,6 +1,6 @@
 """Observability wiring (Production Hardening Sprint H6) — closes the
-production readiness review's OBS1 finding: no metrics, no error
-tracking, and a health check that only ever looked at the database.
+production readiness review's M1 (no metrics), M2 (no request
+correlation), and M3 (no error tracking) findings.
 
 Follows the same "safe default, real implementation behind a lazy
 import" pattern as every provider in this codebase: metrics are mounted

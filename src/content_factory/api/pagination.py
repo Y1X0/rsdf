@@ -1,5 +1,5 @@
 """Shared `limit`/`offset` query params for list endpoints (Production
-Hardening Sprint H5 — closes the production readiness review's DB2
+Hardening Sprint H5 — closes the production readiness review's P3
 finding: every list endpoint returned its full table with no upper bound).
 
 One dependency, reused across every router, so the bounds are identical

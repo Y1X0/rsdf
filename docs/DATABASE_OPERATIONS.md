@@ -144,7 +144,8 @@ sprint (`services/media_backup.py`):
 
 ## 6. Hot-path indexes and list-endpoint pagination (Production Hardening Sprint H5)
 
-Closes the production readiness review's DB1 finding: several hot-path
+Closes the production readiness review's D1/D4 findings (missing
+indexes) and P3 finding (unpaginated list endpoints): several hot-path
 query columns had no index, and every list endpoint returned its entire
 table with no upper bound — fine at test-fixture scale, a real production
 risk once campaigns/videos/publications/cost-ledger rows number in the
