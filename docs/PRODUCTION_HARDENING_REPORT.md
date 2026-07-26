@@ -91,4 +91,6 @@ Everything below is either an accepted tradeoff at current scale or a gap that n
 
 **READY.** Every P0 item (containerization, CI/CD, database safety) has been implemented and — critically — actually verified, including via a real green CI run with a successful container build, which is the one piece of independent verification this sandboxed environment could not provide on its own until GitHub Actions confirmed it. Every P1 item has real regression coverage, with two of the trickiest ones (the Redis rate limiter's distributed-safety property, the budget governor's concurrency fix) proven against real infrastructure rather than asserted from code review alone.
 
-The remaining risks in §3 are exactly the kind of thing that should be visible and tracked, not blocking: none of them represents an unverified claim or a hidden defect, and none requires more than what's already documented to close. Proceed to Phase 3.
+The remaining risks in §3 are exactly the kind of thing that should be visible and tracked, not blocking: none of them represents an unverified claim or a hidden defect, and none requires more than what's already documented to close.
+
+**Update:** production hardening is approved. Before Phase 3, the system enters a Pilot Validation Phase — see `docs/PILOT_PLAN.md` — to prove measurable business results on real campaigns before any further architecture investment. Phase 3 remains gated behind that pilot's own decision criteria, not this report alone.
