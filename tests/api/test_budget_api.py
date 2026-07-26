@@ -26,6 +26,20 @@ def test_operator_can_create_and_list_ceilings(client):
     assert len(resp.json()) == 1
 
 
+def test_list_ceilings_respects_limit_and_offset(client):
+    """Production Hardening Sprint H5: GET /budget/ceilings used to return
+    every row unbounded."""
+    for limit_usd in (100.0, 200.0, 300.0):
+        client.post("/budget/ceilings", json={"scope": "system", "monthly_limit_usd": limit_usd})
+
+    first_page = client.get("/budget/ceilings", params={"limit": 2, "offset": 0}).json()
+    assert len(first_page) == 2
+
+    second_page = client.get("/budget/ceilings", params={"limit": 2, "offset": 2}).json()
+    assert len(second_page) == 1
+    assert {c["id"] for c in first_page}.isdisjoint({c["id"] for c in second_page})
+
+
 def test_non_operator_cannot_create_ceiling(client):
     settings = get_settings()
     viewer_token = create_access_token(subject="read-only-client", role="viewer", settings=settings)

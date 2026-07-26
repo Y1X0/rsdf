@@ -158,3 +158,96 @@ def test_render_is_idempotent(client):
 def test_render_missing_script_returns_404(client):
     resp = client.post("/scripts/999/render", json={})
     assert resp.status_code == 404
+
+
+def test_list_research_briefs_respects_limit_and_offset(client):
+    """Production Hardening Sprint H5: GET /campaigns/{id}/research used to
+    return every row unbounded. Uses a campaign with no niche (niche_id is
+    nullable and NULLs don't collide under a unique constraint) — the
+    canned fake-LLM response always yields the same hook_text, which would
+    otherwise violate HookLibrary's (niche_id, hook_text) unique
+    constraint on the second and third research call within one niche."""
+    campaign = _create_campaign(client, niche_name=None)
+    for notes in ("notes one", "notes two", "notes three"):
+        resp = client.post(f"/campaigns/{campaign['id']}/research", json={"raw_notes": notes})
+        assert resp.status_code == 200
+
+    first_page = client.get(
+        f"/campaigns/{campaign['id']}/research", params={"limit": 2, "offset": 0}
+    ).json()
+    assert len(first_page) == 2
+
+    second_page = client.get(
+        f"/campaigns/{campaign['id']}/research", params={"limit": 2, "offset": 2}
+    ).json()
+    assert len(second_page) == 1
+    assert {b["id"] for b in first_page}.isdisjoint({b["id"] for b in second_page})
+
+
+def test_list_ideas_respects_limit_and_offset(client):
+    """Production Hardening Sprint H5: GET /campaigns/{id}/ideas used to
+    return every row unbounded."""
+    campaign = _create_campaign(client)
+    for summary in ("idea one", "idea two", "idea three"):
+        client.post(f"/campaigns/{campaign['id']}/ideas", json={"concept_summary": summary})
+
+    first_page = client.get(f"/campaigns/{campaign['id']}/ideas", params={"limit": 2, "offset": 0}).json()
+    assert len(first_page) == 2
+
+    second_page = client.get(f"/campaigns/{campaign['id']}/ideas", params={"limit": 2, "offset": 2}).json()
+    assert len(second_page) == 1
+    assert {i["id"] for i in first_page}.isdisjoint({i["id"] for i in second_page})
+
+
+def test_list_scripts_respects_limit_and_offset(client):
+    """Production Hardening Sprint H5: GET /ideas/{id}/scripts used to
+    return every row unbounded. The fake LLM's canned response always
+    yields exactly 2 script variants regardless of the requested
+    `num_variants` (it's not truncated by the agent), so two calls with
+    different `num_variants` values (different idempotency fingerprints,
+    so neither is a replay of the other) accumulate 4 scripts under one
+    idea rather than one call accumulating 3+."""
+    campaign = _create_campaign(client)
+    idea = client.post(f"/campaigns/{campaign['id']}/ideas", json={"concept_summary": "idea"}).json()
+    client.post(f"/ideas/{idea['id']}/scripts", json={"num_variants": 1})
+    client.post(f"/ideas/{idea['id']}/scripts", json={"num_variants": 2})
+    # Two calls of 2 variants each => 4 scripts total under this idea.
+
+    first_page = client.get(f"/ideas/{idea['id']}/scripts", params={"limit": 3, "offset": 0}).json()
+    assert len(first_page) == 3
+
+    second_page = client.get(f"/ideas/{idea['id']}/scripts", params={"limit": 3, "offset": 3}).json()
+    assert len(second_page) == 1
+    assert {s["id"] for s in first_page}.isdisjoint({s["id"] for s in second_page})
+
+
+def test_list_hooks_respects_limit_and_offset(client):
+    """Production Hardening Sprint H5: GET /hooks used to return every row
+    unbounded. Each research call is run against its own niche — the same
+    canned hook text would collide with the (niche_id, hook_text) unique
+    constraint if reused within one niche."""
+    for niche_name in ("hooks-niche-1", "hooks-niche-2", "hooks-niche-3"):
+        campaign = _create_campaign(client, niche_name=niche_name)
+        client.post(f"/campaigns/{campaign['id']}/research", json={"raw_notes": "notes"})
+
+    first_page = client.get("/hooks", params={"limit": 2, "offset": 0}).json()
+    assert len(first_page) == 2
+
+    second_page = client.get("/hooks", params={"limit": 2, "offset": 2}).json()
+    assert len(second_page) >= 1
+    assert {h["id"] for h in first_page}.isdisjoint({h["id"] for h in second_page})
+
+
+def test_list_patterns_respects_limit_and_offset(client):
+    """Production Hardening Sprint H5: GET /patterns used to return every
+    row unbounded."""
+    for niche_name in ("patterns-niche-1", "patterns-niche-2", "patterns-niche-3"):
+        campaign = _create_campaign(client, niche_name=niche_name)
+        client.post(f"/campaigns/{campaign['id']}/research", json={"raw_notes": "notes"})
+
+    first_page = client.get("/patterns", params={"limit": 2, "offset": 0}).json()
+    assert len(first_page) == 2
+
+    second_page = client.get("/patterns", params={"limit": 2, "offset": 2}).json()
+    assert len(second_page) >= 1
+    assert {p["id"] for p in first_page}.isdisjoint({p["id"] for p in second_page})

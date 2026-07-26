@@ -8,3 +8,4 @@ var/
 .pytest_cache/
 .coverage
 *.db
+dump.rdb

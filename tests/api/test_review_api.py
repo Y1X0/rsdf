@@ -46,3 +46,31 @@ def test_repeated_rejection_reason_appears_as_known_bad_pattern(client):
 def test_review_missing_video_returns_404(client):
     resp = client.post("/videos/999/review", json={"reviewer_id": "a", "decision": "approved"})
     assert resp.status_code == 404
+
+
+def test_list_videos_respects_limit_and_offset(client):
+    """Production Hardening Sprint H5: GET /videos used to return every
+    row unbounded."""
+    for _ in range(3):
+        _create_video(client)
+
+    first_page = client.get("/videos", params={"limit": 2, "offset": 0}).json()
+    assert len(first_page) == 2
+
+    second_page = client.get("/videos", params={"limit": 2, "offset": 2}).json()
+    assert len(second_page) == 1
+    assert {v["id"] for v in first_page}.isdisjoint({v["id"] for v in second_page})
+
+
+def test_list_pending_review_respects_limit_and_offset(client):
+    """Production Hardening Sprint H5: GET /videos/pending-review used to
+    return every row unbounded."""
+    for _ in range(3):
+        _create_video(client)
+
+    first_page = client.get("/videos/pending-review", params={"limit": 2, "offset": 0}).json()
+    assert len(first_page) == 2
+
+    second_page = client.get("/videos/pending-review", params={"limit": 2, "offset": 2}).json()
+    assert len(second_page) == 1
+    assert {v["id"] for v in first_page}.isdisjoint({v["id"] for v in second_page})

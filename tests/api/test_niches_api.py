@@ -25,6 +25,20 @@ def test_create_list_get_update_niche(client):
     assert updated["category"] == "finance"
 
 
+def test_list_niches_respects_limit_and_offset(client):
+    """Production Hardening Sprint H5: GET /niches used to return every
+    row unbounded."""
+    for name in ("alpha_niche", "beta_niche", "gamma_niche"):
+        client.post("/niches", json={"name": name})
+
+    first_page = client.get("/niches", params={"limit": 2, "offset": 0}).json()
+    assert len(first_page) == 2
+
+    second_page = client.get("/niches", params={"limit": 2, "offset": 2}).json()
+    assert len(second_page) == 1
+    assert {n["id"] for n in first_page}.isdisjoint({n["id"] for n in second_page})
+
+
 def test_create_niche_conflicts_on_duplicate_name(client):
     client.post("/niches", json={"name": "gaming"})
     resp = client.post("/niches", json={"name": "gaming"})

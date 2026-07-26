@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from content_factory.api.deps import get_db
+from content_factory.api.pagination import Pagination, pagination_params
 from content_factory.auth.dependencies import require_auth, require_operator
 from content_factory.db.models.niche import Niche
 from content_factory.schemas.analytics import ProfitSummaryOut
@@ -44,8 +45,12 @@ def create_niche(
 
 
 @router.get("", response_model=list[NicheOut])
-def list_niches(db: Session = Depends(get_db), _principal: dict = Depends(require_auth)) -> list[NicheOut]:
-    niches = db.query(Niche).order_by(Niche.name.asc()).all()
+def list_niches(
+    db: Session = Depends(get_db),
+    pagination: Pagination = Depends(pagination_params),
+    _principal: dict = Depends(require_auth),
+) -> list[NicheOut]:
+    niches = db.query(Niche).order_by(Niche.name.asc()).offset(pagination.offset).limit(pagination.limit).all()
     return [NicheOut.model_validate(n) for n in niches]
 
 

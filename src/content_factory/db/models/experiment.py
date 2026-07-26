@@ -50,7 +50,9 @@ class ExperimentResult(TimestampMixin, Base):
     subject_key: Mapped[str] = mapped_column(String(200))
     sample_size: Mapped[int] = mapped_column(Integer)
     avg_viral_score: Mapped[float] = mapped_column(Float)
-    is_winner: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Indexed (Production Hardening Sprint H5): `GET /experimentation/
+    # recommendations` filters on this by default (winners_only=True).
+    is_winner: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     applied_at: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     applied_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
     computed_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True))

@@ -68,6 +68,20 @@ def test_list_and_get_account(client):
     assert resp.json()["handle"] == "creator1"
 
 
+def test_list_accounts_respects_limit_and_offset(client):
+    """Production Hardening Sprint H5: GET /accounts used to return every
+    row unbounded."""
+    for handle in ("creator1", "creator2", "creator3"):
+        _create_account(client, handle=handle)
+
+    first_page = client.get("/accounts", params={"limit": 2, "offset": 0}).json()
+    assert len(first_page) == 2
+
+    second_page = client.get("/accounts", params={"limit": 2, "offset": 2}).json()
+    assert len(second_page) == 1
+    assert {a["id"] for a in first_page}.isdisjoint({a["id"] for a in second_page})
+
+
 def test_health_check_updates_account_and_persists_snapshot(client):
     account = _create_account(client)
     resp = client.post(

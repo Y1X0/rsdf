@@ -51,6 +51,32 @@ def test_list_recommendations_defaults_to_winners_only(client):
     assert resp.json() == []  # nothing computed yet
 
 
+def test_list_recommendations_respects_limit_and_offset(client):
+    """Production Hardening Sprint H5: GET /experimentation/recommendations
+    used to return every row unbounded. Uses the "niche" axis across three
+    distinct niches (rather than "hook") so each video produces its own
+    subject/result row — every video in this test's fake data shares the
+    same canned hook text, which would otherwise collapse to a single
+    "hook" subject and defeat the pagination check."""
+    for i in range(3):
+        _create_video_with_score(client, niche_name=f"finance-{i}", hook_text_suffix=str(i))
+    client.post("/experimentation/run", json={"axis": "niche", "min_sample_size": 1})
+
+    all_results = client.get("/experimentation/recommendations", params={"winners_only": False}).json()
+    assert len(all_results) >= 3
+
+    first_page = client.get(
+        "/experimentation/recommendations", params={"winners_only": False, "limit": 2, "offset": 0}
+    ).json()
+    assert len(first_page) == 2
+
+    second_page = client.get(
+        "/experimentation/recommendations", params={"winners_only": False, "limit": 2, "offset": 2}
+    ).json()
+    assert len(second_page) >= 1
+    assert {r["id"] for r in first_page}.isdisjoint({r["id"] for r in second_page})
+
+
 def test_apply_recommendation_requires_a_winner(client):
     video = _create_video_with_score(client, niche_name="finance", hook_text_suffix="only-one")
     resp = client.post(

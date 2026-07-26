@@ -141,3 +141,45 @@ sprint (`services/media_backup.py`):
   (`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_REGION`), not a
   custom setting — this matches how the AWS CLI itself is configured, so
   ops tooling and the app agree on where credentials live.
+
+## 6. Hot-path indexes and list-endpoint pagination (Production Hardening Sprint H5)
+
+Closes the production readiness review's DB1 finding: several hot-path
+query columns had no index, and every list endpoint returned its entire
+table with no upper bound — fine at test-fixture scale, a real production
+risk once campaigns/videos/publications/cost-ledger rows number in the
+thousands.
+
+**Indexes added** (`alembic/versions/0008_database_optimization.py`):
+
+| Table | Change | Why |
+|---|---|---|
+| `cost_ledger` | index on `recorded_at` | Filtered with `>=` on every `enforce_budget` call (`services/budget_governor.py::_compute_spend`) — i.e. every cost-incurring request. |
+| `experiment_results` | index on `is_winner` | Filtered by the default (`winners_only=True`) `GET /experimentation/recommendations` path. |
+| `publications` | three single-column indexes (`account_id`, `status`; `published_at` had none) replaced with one composite `(account_id, status, published_at)` | Matches `publishing_service.py`'s actual daily-cadence-cap query shape (all three filtered together, on every publish attempt); the composite's leftmost prefix still serves the one place `account_id` is queried alone (`analytics_service.py`'s account profit rollup). |
+| `idempotency_records` | dropped standalone `scope` and `key` indexes | Every query filters on `(scope, key)` together (`services/idempotency.py`) — the existing `UniqueConstraint("scope", "key")` already provides a composite index that covers this; the standalone ones were dead weight on every write. |
+
+Regression coverage: `tests/unit/test_schema_indexes.py` asserts each of
+these directly against SQLAlchemy model metadata (the same pattern
+already established there for the v1.1 index fixes), so a future
+accidental revert fails a fast unit test rather than surfacing as a slow
+query.
+
+**Pagination** (`src/content_factory/api/pagination.py`): every list
+endpoint now takes `limit` (default 50, max 200) and `offset` (default 0)
+query params via one shared `pagination_params` FastAPI dependency, applied
+as `.offset(...).limit(...)` on the underlying query. This covers
+`GET /campaigns`, `/niches`, `/accounts`, `/publications`,
+`/budget/ceilings`, `/videos`, `/videos/pending-review`,
+`/campaigns/{id}/research`, `/campaigns/{id}/ideas`, `/ideas/{id}/scripts`,
+`/hooks`, `/patterns`, and `/experimentation/recommendations`.
+`GET /budget/status` is deliberately left unpaginated — it returns at most
+two computed rows (system-wide + one niche), never a table scan.
+
+This is an additive, backward-compatible change: omitting `limit`/`offset`
+entirely gives the same shape of response as before (just capped at 50
+rows instead of unbounded), so no existing client integration breaks:
+only a client that both (a) already has more than 50 rows in a given list
+and (b) never sends `limit` will now need to paginate to see the rest —
+matching what "hot-path" scale was going to force at some later point
+anyway, just discovered now instead of during a real production incident.

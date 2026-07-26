@@ -88,7 +88,10 @@ class CostLedger(TimestampMixin, Base):
     """'llm' | 'tts' | 'render' | 'human_review' | 'other'."""
     provider: Mapped[str | None] = mapped_column(String(50), nullable=True)
     cost_usd: Mapped[float] = mapped_column(Numeric(10, 4))
-    recorded_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True))
+    # Indexed (Production Hardening Sprint H5): filtered with `>=` on every
+    # `enforce_budget` call (services/budget_governor.py::_compute_spend),
+    # i.e. every cost-incurring endpoint request — a hot path.
+    recorded_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), index=True)
     note: Mapped[str | None] = mapped_column(String(300), nullable=True)
 
     def __repr__(self) -> str:  # pragma: no cover

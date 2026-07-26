@@ -18,6 +18,20 @@ def test_create_campaign_and_fetch_it(client):
     assert get_resp.json()["id"] == campaign_id
 
 
+def test_list_campaigns_respects_limit_and_offset(client):
+    """Production Hardening Sprint H5: GET /campaigns used to return every
+    row unbounded."""
+    for brand in ("Acme A", "Acme B", "Acme C"):
+        client.post("/campaigns", json={"brand_name": brand, "cpm_rate": 4.0})
+
+    first_page = client.get("/campaigns", params={"limit": 2, "offset": 0}).json()
+    assert len(first_page) == 2
+
+    second_page = client.get("/campaigns", params={"limit": 2, "offset": 2}).json()
+    assert len(second_page) == 1
+    assert {c["id"] for c in first_page}.isdisjoint({c["id"] for c in second_page})
+
+
 def test_create_campaign_is_idempotent_on_repeated_identical_request(client):
     payload = {"brand_name": "Acme Corp", "cpm_rate": 4.0, "idempotency_key": "same-key"}
     first = client.post("/campaigns", json=payload)

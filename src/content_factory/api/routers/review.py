@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from content_factory.api.deps import get_db
+from content_factory.api.pagination import Pagination, pagination_params
 from content_factory.api.serializers import to_video_out
 from content_factory.auth.dependencies import require_auth, require_operator
 from content_factory.db.models.enums import VideoStatus
@@ -25,20 +26,34 @@ router = APIRouter(tags=["review"])
 # come first or it would be swallowed by the parameterized route below.
 @router.get("/videos/pending-review", response_model=list[VideoOut])
 def list_pending_review(
-    db: Session = Depends(get_db), _principal: dict = Depends(require_auth)
+    db: Session = Depends(get_db),
+    pagination: Pagination = Depends(pagination_params),
+    _principal: dict = Depends(require_auth),
 ) -> list[VideoOut]:
     videos = (
         db.query(Video)
         .filter(Video.status == VideoStatus.PENDING_REVIEW)
         .order_by(Video.created_at.asc())
+        .offset(pagination.offset)
+        .limit(pagination.limit)
         .all()
     )
     return [to_video_out(db, v) for v in videos]
 
 
 @router.get("/videos", response_model=list[VideoOut])
-def list_videos(db: Session = Depends(get_db), _principal: dict = Depends(require_auth)) -> list[VideoOut]:
-    videos = db.query(Video).order_by(Video.created_at.desc()).all()
+def list_videos(
+    db: Session = Depends(get_db),
+    pagination: Pagination = Depends(pagination_params),
+    _principal: dict = Depends(require_auth),
+) -> list[VideoOut]:
+    videos = (
+        db.query(Video)
+        .order_by(Video.created_at.desc())
+        .offset(pagination.offset)
+        .limit(pagination.limit)
+        .all()
+    )
     return [to_video_out(db, v) for v in videos]
 
 

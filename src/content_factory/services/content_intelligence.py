@@ -135,25 +135,30 @@ def record_hook_outcome(
     return hook
 
 
-def get_top_hooks(db: Session, *, niche_id: int | None, limit: int = 5) -> list[HookLibrary]:
+def get_top_hooks(db: Session, *, niche_id: int | None, limit: int = 5, offset: int = 0) -> list[HookLibrary]:
     query = db.query(HookLibrary)
     if niche_id is not None:
         query = query.filter(HookLibrary.niche_id == niche_id)
     query = query.order_by(
         nullslast(HookLibrary.best_viral_score.desc()), HookLibrary.created_at.desc()
     )
-    return query.limit(limit).all()
+    return query.offset(offset).limit(limit).all()
 
 
 def get_patterns(
-    db: Session, *, niche_id: int | None = None, tier: PatternConfidenceTier | None = None
+    db: Session,
+    *,
+    niche_id: int | None = None,
+    tier: PatternConfidenceTier | None = None,
+    limit: int = 50,
+    offset: int = 0,
 ) -> list[LearningPattern]:
     query = db.query(LearningPattern)
     if niche_id is not None:
         query = query.filter(LearningPattern.niche_id == niche_id)
     if tier is not None:
         query = query.filter(LearningPattern.confidence_tier == tier)
-    return query.order_by(LearningPattern.created_at.desc()).all()
+    return query.order_by(LearningPattern.created_at.desc()).offset(offset).limit(limit).all()
 
 
 def record_review_pattern(

@@ -201,3 +201,22 @@ def test_list_and_get_publication(client):
     resp = client.get(f"/publications/{created['id']}")
     assert resp.status_code == 200
     assert resp.json()["title"] == "t"
+
+
+def test_list_publications_respects_limit_and_offset(client):
+    """Production Hardening Sprint H5: GET /publications used to return
+    every row unbounded."""
+    account = _create_account(client, daily_post_cap=5)
+    for i in range(3):
+        video = _create_approved_video(client)
+        client.post(
+            f"/videos/{video['id']}/publish",
+            json={"account_id": account["id"], "title": f"t{i}", "description": "d"},
+        )
+
+    first_page = client.get("/publications", params={"limit": 2, "offset": 0}).json()
+    assert len(first_page) == 2
+
+    second_page = client.get("/publications", params={"limit": 2, "offset": 2}).json()
+    assert len(second_page) == 1
+    assert {p["id"] for p in first_page}.isdisjoint({p["id"] for p in second_page})

@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from content_factory.api.deps import get_db
+from content_factory.api.pagination import Pagination, pagination_params
 from content_factory.auth.dependencies import require_auth, require_operator
 from content_factory.db.models.budget import BudgetCeiling
 from content_factory.schemas.budget import BudgetCeilingCreate, BudgetCeilingOut, BudgetStatusOut
@@ -34,9 +35,17 @@ def create_ceiling(
 
 @router.get("/ceilings", response_model=list[BudgetCeilingOut])
 def list_ceilings(
-    db: Session = Depends(get_db), _principal: dict = Depends(require_auth)
+    db: Session = Depends(get_db),
+    pagination: Pagination = Depends(pagination_params),
+    _principal: dict = Depends(require_auth),
 ) -> list[BudgetCeilingOut]:
-    ceilings = db.query(BudgetCeiling).order_by(BudgetCeiling.created_at.desc()).all()
+    ceilings = (
+        db.query(BudgetCeiling)
+        .order_by(BudgetCeiling.created_at.desc())
+        .offset(pagination.offset)
+        .limit(pagination.limit)
+        .all()
+    )
     return [BudgetCeilingOut.model_validate(c) for c in ceilings]
 
 

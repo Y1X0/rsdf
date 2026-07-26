@@ -18,6 +18,7 @@ from content_factory.api.deps import (
     get_tts_provider,
     get_video_renderer,
 )
+from content_factory.api.pagination import Pagination, pagination_params
 from content_factory.api.serializers import to_video_out
 from content_factory.auth.dependencies import require_auth, require_operator
 from content_factory.config import get_settings
@@ -92,12 +93,17 @@ def run_research(
 
 @router.get("/campaigns/{campaign_id}/research", response_model=list[ResearchBriefOut])
 def list_research_briefs(
-    campaign_id: int, db: Session = Depends(get_db), _principal: dict = Depends(require_auth)
+    campaign_id: int,
+    db: Session = Depends(get_db),
+    pagination: Pagination = Depends(pagination_params),
+    _principal: dict = Depends(require_auth),
 ) -> list[ResearchBriefOut]:
     briefs = (
         db.query(ResearchBrief)
         .filter(ResearchBrief.campaign_id == campaign_id)
         .order_by(ResearchBrief.created_at.desc())
+        .offset(pagination.offset)
+        .limit(pagination.limit)
         .all()
     )
     return [ResearchBriefOut.model_validate(b) for b in briefs]
@@ -126,12 +132,17 @@ def create_idea(
 
 @router.get("/campaigns/{campaign_id}/ideas", response_model=list[ContentIdeaOut])
 def list_ideas(
-    campaign_id: int, db: Session = Depends(get_db), _principal: dict = Depends(require_auth)
+    campaign_id: int,
+    db: Session = Depends(get_db),
+    pagination: Pagination = Depends(pagination_params),
+    _principal: dict = Depends(require_auth),
 ) -> list[ContentIdeaOut]:
     ideas = (
         db.query(ContentIdea)
         .filter(ContentIdea.campaign_id == campaign_id)
         .order_by(ContentIdea.created_at.desc())
+        .offset(pagination.offset)
+        .limit(pagination.limit)
         .all()
     )
     return [ContentIdeaOut.model_validate(i) for i in ideas]
@@ -191,9 +202,19 @@ def generate_scripts(
 
 @router.get("/ideas/{idea_id}/scripts", response_model=list[ScriptOut])
 def list_scripts(
-    idea_id: int, db: Session = Depends(get_db), _principal: dict = Depends(require_auth)
+    idea_id: int,
+    db: Session = Depends(get_db),
+    pagination: Pagination = Depends(pagination_params),
+    _principal: dict = Depends(require_auth),
 ) -> list[ScriptOut]:
-    scripts = db.query(Script).filter(Script.idea_id == idea_id).order_by(Script.created_at.desc()).all()
+    scripts = (
+        db.query(Script)
+        .filter(Script.idea_id == idea_id)
+        .order_by(Script.created_at.desc())
+        .offset(pagination.offset)
+        .limit(pagination.limit)
+        .all()
+    )
     return [ScriptOut.model_validate(s) for s in scripts]
 
 
@@ -279,17 +300,24 @@ def render_script(
 @router.get("/hooks", response_model=list[HookOut])
 def list_hooks(
     niche_id: int | None = None,
-    limit: int = 20,
     db: Session = Depends(get_db),
+    pagination: Pagination = Depends(pagination_params),
     _principal: dict = Depends(require_auth),
 ) -> list[HookOut]:
-    hooks = content_intelligence.get_top_hooks(db, niche_id=niche_id, limit=limit)
+    hooks = content_intelligence.get_top_hooks(
+        db, niche_id=niche_id, limit=pagination.limit, offset=pagination.offset
+    )
     return [HookOut.model_validate(h) for h in hooks]
 
 
 @router.get("/patterns", response_model=list[LearningPatternOut])
 def list_patterns(
-    niche_id: int | None = None, db: Session = Depends(get_db), _principal: dict = Depends(require_auth)
+    niche_id: int | None = None,
+    db: Session = Depends(get_db),
+    pagination: Pagination = Depends(pagination_params),
+    _principal: dict = Depends(require_auth),
 ) -> list[LearningPatternOut]:
-    patterns = content_intelligence.get_patterns(db, niche_id=niche_id)
+    patterns = content_intelligence.get_patterns(
+        db, niche_id=niche_id, limit=pagination.limit, offset=pagination.offset
+    )
     return [LearningPatternOut.model_validate(p) for p in patterns]

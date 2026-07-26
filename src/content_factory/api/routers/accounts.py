@@ -12,6 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from content_factory.api.deps import get_db
+from content_factory.api.pagination import Pagination, pagination_params
 from content_factory.api.serializers import to_account_out
 from content_factory.auth.dependencies import require_auth, require_operator
 from content_factory.config import Settings, get_settings
@@ -75,8 +76,18 @@ def create_account(
 
 
 @router.get("", response_model=list[OwnedAccountOut])
-def list_accounts(db: Session = Depends(get_db), _principal: dict = Depends(require_auth)) -> list[OwnedAccountOut]:
-    accounts = db.query(OwnedAccount).order_by(OwnedAccount.created_at.desc()).all()
+def list_accounts(
+    db: Session = Depends(get_db),
+    pagination: Pagination = Depends(pagination_params),
+    _principal: dict = Depends(require_auth),
+) -> list[OwnedAccountOut]:
+    accounts = (
+        db.query(OwnedAccount)
+        .order_by(OwnedAccount.created_at.desc())
+        .offset(pagination.offset)
+        .limit(pagination.limit)
+        .all()
+    )
     return [to_account_out(a) for a in accounts]
 
 

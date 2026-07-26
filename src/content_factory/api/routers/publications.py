@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 from content_factory.analytics_ingestion.base import MetricsNotAutomated
 from content_factory.analytics_ingestion.factory import get_analytics_provider
 from content_factory.api.deps import get_db
+from content_factory.api.pagination import Pagination, pagination_params
 from content_factory.auth.dependencies import require_auth, require_operator
 from content_factory.config import Settings, get_settings
 from content_factory.db.models.account import OwnedAccount
@@ -110,9 +111,17 @@ def publish_video(
 
 @router.get("/publications", response_model=list[PublicationOut])
 def list_publications(
-    db: Session = Depends(get_db), _principal: dict = Depends(require_auth)
+    db: Session = Depends(get_db),
+    pagination: Pagination = Depends(pagination_params),
+    _principal: dict = Depends(require_auth),
 ) -> list[PublicationOut]:
-    pubs = db.query(Publication).order_by(Publication.created_at.desc()).all()
+    pubs = (
+        db.query(Publication)
+        .order_by(Publication.created_at.desc())
+        .offset(pagination.offset)
+        .limit(pagination.limit)
+        .all()
+    )
     return [PublicationOut.model_validate(p) for p in pubs]
 
 

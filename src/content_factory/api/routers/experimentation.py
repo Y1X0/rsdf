@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from content_factory.api.deps import get_db
+from content_factory.api.pagination import Pagination, pagination_params
 from content_factory.auth.dependencies import require_auth, require_operator
 from content_factory.db.models.experiment import Experiment, ExperimentResult
 from content_factory.schemas.experiment import (
@@ -54,12 +55,18 @@ def run_experiment(
 def list_recommendations(
     winners_only: bool = True,
     db: Session = Depends(get_db),
+    pagination: Pagination = Depends(pagination_params),
     _principal: dict = Depends(require_auth),
 ) -> list[ExperimentResultOut]:
     query = db.query(ExperimentResult)
     if winners_only:
         query = query.filter(ExperimentResult.is_winner.is_(True))
-    results = query.order_by(ExperimentResult.computed_at.desc()).all()
+    results = (
+        query.order_by(ExperimentResult.computed_at.desc())
+        .offset(pagination.offset)
+        .limit(pagination.limit)
+        .all()
+    )
     return [ExperimentResultOut.model_validate(r) for r in results]
 
 

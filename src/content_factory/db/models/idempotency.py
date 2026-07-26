@@ -24,8 +24,14 @@ class IdempotencyRecord(TimestampMixin, Base):
     __table_args__ = (UniqueConstraint("scope", "key", name="uq_idempotency_scope_key"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    scope: Mapped[str] = mapped_column(String(100), index=True)
-    key: Mapped[str] = mapped_column(String(200), index=True)
+    # No standalone index=True on these two (Production Hardening Sprint
+    # H5): every query filters on (scope, key) together
+    # (services/idempotency.py), never on either column alone, and the
+    # UniqueConstraint above already creates a composite index that covers
+    # that — a separate single-column index on `scope` would be redundant,
+    # and one on `key` alone serves no actual query.
+    scope: Mapped[str] = mapped_column(String(100))
+    key: Mapped[str] = mapped_column(String(200))
     request_fingerprint: Mapped[str] = mapped_column(String(64))
 
     status: Mapped[ProcessingStatus] = mapped_column(
