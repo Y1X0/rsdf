@@ -129,3 +129,89 @@ def test_dashboard_summary_reflects_created_data(db_session):
     summary = analytics_service.get_dashboard_summary(db_session)
     assert summary["campaign_count"] == 1
     assert summary["total_cost_usd"] == 1.0
+
+
+def test_attempt_auto_metrics_sync_not_applicable_when_not_actually_published(db_session):
+    from content_factory.config import Settings
+    from content_factory.db.models.account import OwnedAccount
+    from content_factory.db.models.enums import AccountPlatform, PublicationStatus
+    from content_factory.db.models.publication import Publication
+
+    video, _ = _make_video_with_script(db_session)
+    account = OwnedAccount(platform=AccountPlatform.TIKTOK, handle="creator1")
+    db_session.add(account)
+    db_session.flush()
+    publication = Publication(
+        video_id=video.id, account_id=account.id, platform=AccountPlatform.TIKTOK,
+        title="t", description="d", hashtags=[], status=PublicationStatus.SCHEDULED,
+        scheduled_at=datetime.now(UTC),
+    )
+    db_session.add(publication)
+    db_session.flush()
+
+    outcome = analytics_service.attempt_auto_metrics_sync(db_session, publication=publication, settings=Settings())
+
+    assert outcome.status == "not_applicable"
+    assert "nothing to sync" in outcome.detail
+
+
+def test_attempt_auto_metrics_sync_not_automated_with_manual_provider(db_session):
+    """Even a genuinely PUBLISHED row falls back to "not_automated" here,
+    since ManualAnalyticsProvider (no real platform credentials in tests)
+    always raises MetricsNotAutomated - the honest, expected default."""
+    from content_factory.config import Settings
+    from content_factory.db.models.account import OwnedAccount
+    from content_factory.db.models.enums import AccountPlatform, PublicationStatus
+    from content_factory.db.models.publication import Publication
+
+    video, _ = _make_video_with_script(db_session)
+    account = OwnedAccount(platform=AccountPlatform.TIKTOK, handle="creator1")
+    db_session.add(account)
+    db_session.flush()
+    publication = Publication(
+        video_id=video.id, account_id=account.id, platform=AccountPlatform.TIKTOK,
+        title="t", description="d", hashtags=[], status=PublicationStatus.PUBLISHED,
+        external_post_id="ext-123", published_at=datetime.now(UTC), scheduled_at=datetime.now(UTC),
+    )
+    db_session.add(publication)
+    db_session.flush()
+
+    outcome = analytics_service.attempt_auto_metrics_sync(db_session, publication=publication, settings=Settings())
+
+    assert outcome.status == "not_automated"
+
+
+def test_attempt_auto_metrics_sync_records_metrics_when_provider_succeeds(db_session, monkeypatch):
+    from content_factory.analytics_ingestion.base import AnalyticsFetchResult
+    from content_factory.config import Settings
+    from content_factory.db.models.account import OwnedAccount
+    from content_factory.db.models.enums import AccountPlatform, PublicationStatus
+    from content_factory.db.models.publication import Publication
+
+    video, _ = _make_video_with_script(db_session)
+    account = OwnedAccount(platform=AccountPlatform.TIKTOK, handle="creator1")
+    db_session.add(account)
+    db_session.flush()
+    publication = Publication(
+        video_id=video.id, account_id=account.id, platform=AccountPlatform.TIKTOK,
+        title="t", description="d", hashtags=[], status=PublicationStatus.PUBLISHED,
+        external_post_id="ext-123", published_at=datetime.now(UTC), scheduled_at=datetime.now(UTC),
+    )
+    db_session.add(publication)
+    db_session.flush()
+
+    class _FakeProvider:
+        def fetch_metrics(self, *, external_post_id):
+            return AnalyticsFetchResult(
+                views=1000, avg_watch_time_s=10.0, completion_rate=0.5, rewatch_rate=0.1,
+                shares=5, comments=3, likes=50, saves=2,
+            )
+
+    import content_factory.analytics_ingestion.factory as factory_module
+
+    monkeypatch.setattr(factory_module, "get_analytics_provider", lambda platform, settings, access_token=None: _FakeProvider())
+
+    outcome = analytics_service.attempt_auto_metrics_sync(db_session, publication=publication, settings=Settings())
+
+    assert outcome.status == "recorded"
+    assert "views=1000" in outcome.detail

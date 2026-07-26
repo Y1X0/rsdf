@@ -44,6 +44,7 @@ class SourceVideo(TimestampMixin, Base):
     analysis_agent_run_id: Mapped[int | None] = mapped_column(ForeignKey("agent_runs.id"), nullable=True)
 
     clips: Mapped[list["Clip"]] = relationship(back_populates="source_video")  # noqa: F821
+    campaign: Mapped["Campaign | None"] = relationship()  # noqa: F821
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"SourceVideo(id={self.id}, title={self.title!r})"

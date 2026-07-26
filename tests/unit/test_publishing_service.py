@@ -189,3 +189,88 @@ def test_publish_video_leaves_a_failed_publication_row_on_provider_error(db_sess
 
     pub = db_session.query(Publication).filter(Publication.video_id == video.id).one()
     assert pub.status == PublicationStatus.FAILED
+
+
+def test_attempt_auto_publish_skips_when_no_eligible_account(db_session):
+    video = _make_video(db_session)
+    settings = Settings()
+
+    outcome = publishing_service.attempt_auto_publish(db_session, video=video, settings=settings)
+
+    assert outcome.status == "skipped"
+    assert "no eligible" in outcome.detail
+    assert outcome.publication is None
+
+
+def test_attempt_auto_publish_skips_when_multiple_ambiguous_accounts(db_session):
+    video = _make_video(db_session)
+    _make_account(db_session, handle="one")
+    _make_account(db_session, handle="two")
+    settings = Settings()
+
+    outcome = publishing_service.attempt_auto_publish(db_session, video=video, settings=settings)
+
+    assert outcome.status == "skipped"
+    assert "ambiguous" in outcome.detail
+
+
+def test_attempt_auto_publish_succeeds_with_exactly_one_eligible_account(db_session):
+    video = _make_video(db_session)
+    account = _make_account(db_session)
+    settings = Settings()
+
+    outcome = publishing_service.attempt_auto_publish(db_session, video=video, settings=settings)
+
+    # ManualPublishingProvider (no real platform credentials configured in
+    # tests) always reports published=False -> "scheduled", not "published".
+    assert outcome.status == "scheduled"
+    assert outcome.publication is not None
+    assert outcome.publication.account_id == account.id
+
+
+def test_attempt_auto_publish_prefers_niche_matched_account(db_session):
+    from content_factory.db.models.niche import Niche
+
+    niche = Niche(name="finance")
+    db_session.add(niche)
+    db_session.flush()
+
+    video = _make_video(db_session)
+    video.script.idea.campaign.niche_id = niche.id
+    db_session.flush()
+
+    _make_account(db_session, handle="unmatched")
+    matched = _make_account(db_session, handle="matched", niche_focus_id=niche.id)
+    settings = Settings()
+
+    outcome = publishing_service.attempt_auto_publish(db_session, video=video, settings=settings)
+
+    assert outcome.status == "scheduled"
+    assert outcome.publication.account_id == matched.id
+
+
+def test_attempt_auto_publish_skips_when_account_blocked_by_cadence_cap(db_session):
+    video = _make_video(db_session)
+    _make_account(db_session, daily_post_cap=0)
+    settings = Settings()
+
+    outcome = publishing_service.attempt_auto_publish(db_session, video=video, settings=settings)
+
+    assert outcome.status == "skipped"
+    assert "published" in outcome.detail.lower()
+
+
+def test_attempt_auto_publish_reports_failed_status_on_unexpected_provider_error(db_session, monkeypatch):
+    video = _make_video(db_session)
+    _make_account(db_session)
+    settings = Settings()
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("unexpected provider crash")
+
+    monkeypatch.setattr(publishing_service, "publish_video", _boom)
+
+    outcome = publishing_service.attempt_auto_publish(db_session, video=video, settings=settings)
+
+    assert outcome.status == "failed"
+    assert "unexpected provider crash" in outcome.detail

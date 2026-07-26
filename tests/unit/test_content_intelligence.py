@@ -34,10 +34,86 @@ def test_ingest_research_brief_creates_hooks_and_patterns(db_session):
 
     result = content_intelligence.ingest_research_brief(db_session, brief=brief, niche_id=niche.id)
 
-    assert result == {"hooks_created": 1, "patterns_created": 1}
+    assert result == {"hooks_created": 1, "patterns_created": 1, "ideas_created": 0}
     hooks = content_intelligence.get_top_hooks(db_session, niche_id=niche.id)
     assert len(hooks) == 1
     assert hooks[0].source == HookSource.COMPETITOR_OBSERVED
+
+
+def test_ingest_research_brief_auto_generates_ideas_from_recommended_angles(db_session):
+    from content_factory.db.models.content import ContentIdea
+
+    niche = _make_niche(db_session)
+    campaign = Campaign(brand_name="Acme", niche_id=niche.id)
+    db_session.add(campaign)
+    db_session.flush()
+
+    brief = ResearchBrief(
+        campaign_id=campaign.id,
+        status=ProcessingStatus.COMPLETED,
+        structured_data={"recommended_angles": ["Budgeting myths", "Quick win tips"]},
+        requested_at=datetime.now(UTC),
+    )
+    db_session.add(brief)
+    db_session.flush()
+
+    result = content_intelligence.ingest_research_brief(db_session, brief=brief, niche_id=niche.id)
+
+    assert result["ideas_created"] == 2
+    ideas = db_session.query(ContentIdea).filter(ContentIdea.campaign_id == campaign.id).all()
+    assert len(ideas) == 2
+    assert {i.concept_summary for i in ideas} == {"Budgeting myths", "Quick win tips"}
+    assert all(i.source == "research_agent" for i in ideas)
+    assert all(i.status == "proposed" for i in ideas)
+
+
+def test_ingest_research_brief_caps_auto_generated_ideas(db_session):
+    from content_factory.db.models.content import ContentIdea
+
+    niche = _make_niche(db_session)
+    campaign = Campaign(brand_name="Acme", niche_id=niche.id)
+    db_session.add(campaign)
+    db_session.flush()
+
+    brief = ResearchBrief(
+        campaign_id=campaign.id,
+        status=ProcessingStatus.COMPLETED,
+        structured_data={"recommended_angles": [f"angle {i}" for i in range(20)]},
+        requested_at=datetime.now(UTC),
+    )
+    db_session.add(brief)
+    db_session.flush()
+
+    result = content_intelligence.ingest_research_brief(db_session, brief=brief, niche_id=niche.id)
+
+    assert result["ideas_created"] == content_intelligence.MAX_AUTO_GENERATED_IDEAS_PER_BRIEF
+    ideas = db_session.query(ContentIdea).filter(ContentIdea.campaign_id == campaign.id).all()
+    assert len(ideas) == content_intelligence.MAX_AUTO_GENERATED_IDEAS_PER_BRIEF
+
+
+def test_ingest_research_brief_skips_blank_angles(db_session):
+    from content_factory.db.models.content import ContentIdea
+
+    niche = _make_niche(db_session)
+    campaign = Campaign(brand_name="Acme", niche_id=niche.id)
+    db_session.add(campaign)
+    db_session.flush()
+
+    brief = ResearchBrief(
+        campaign_id=campaign.id,
+        status=ProcessingStatus.COMPLETED,
+        structured_data={"recommended_angles": ["", "   ", "Real angle"]},
+        requested_at=datetime.now(UTC),
+    )
+    db_session.add(brief)
+    db_session.flush()
+
+    result = content_intelligence.ingest_research_brief(db_session, brief=brief, niche_id=niche.id)
+
+    assert result["ideas_created"] == 1
+    ideas = db_session.query(ContentIdea).filter(ContentIdea.campaign_id == campaign.id).all()
+    assert len(ideas) == 1
+    assert ideas[0].concept_summary == "Real angle"
 
 
 def test_record_hook_outcome_updates_best_score_only_when_higher(db_session):

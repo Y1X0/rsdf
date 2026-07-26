@@ -12,7 +12,7 @@ decision. Swapping in embedding-based retrieval later only changes
 from sqlalchemy import nullslast
 from sqlalchemy.orm import Session
 
-from content_factory.db.models.content import ResearchBrief
+from content_factory.db.models.content import ContentIdea, ResearchBrief
 from content_factory.db.models.enums import HookSource, PatternConfidenceTier, PatternType, ReviewDecisionType
 from content_factory.db.models.hook import HookLibrary, LearningPattern
 from content_factory.logging_config import get_logger
@@ -26,16 +26,23 @@ logger = get_logger(__name__)
 # becomes a known-bad-pattern entry."
 REJECTION_PATTERN_THRESHOLD = 2
 
+# Caps how many ContentIdea rows one research brief can auto-create — the
+# LLM is free to return more angles, but nothing downstream (script
+# generation, rendering) should scale unboundedly with however many
+# angles a single response happened to list.
+MAX_AUTO_GENERATED_IDEAS_PER_BRIEF = 5
+
 _VALID_PATTERN_TYPES = {p.value for p in PatternType}
 
 
 def ingest_research_brief(db: Session, *, brief: ResearchBrief, niche_id: int | None) -> dict:
-    """Persists the Research Agent's structured output into hook_library and
-    learning_patterns. Competitor material is always tagged
-    COMPETITOR_OBSERVED per §4.1's "inspiration only, never verbatim" rule —
-    this function does not attempt to detect verbatim copying itself (that's
-    the Script Agent's job to avoid at generation time); it just labels
-    provenance honestly.
+    """Persists the Research Agent's structured output into hook_library,
+    learning_patterns, and — closing the "Campaign -> Research -> Ideas"
+    automatic transition — content_ideas. Competitor material is always
+    tagged COMPETITOR_OBSERVED per §4.1's "inspiration only, never verbatim"
+    rule — this function does not attempt to detect verbatim copying itself
+    (that's the Script Agent's job to avoid at generation time); it just
+    labels provenance honestly.
     """
     data = brief.structured_data or {}
     hooks_created = 0
@@ -71,14 +78,29 @@ def ingest_research_brief(db: Session, *, brief: ResearchBrief, niche_id: int | 
         )
         patterns_created += 1
 
+    ideas_created = 0
+    for angle in data.get("recommended_angles", [])[:MAX_AUTO_GENERATED_IDEAS_PER_BRIEF]:
+        concept_summary = (angle or "").strip()
+        if not concept_summary:
+            continue
+        db.add(
+            ContentIdea(
+                campaign_id=brief.campaign_id,
+                concept_summary=concept_summary,
+                source="research_agent",
+            )
+        )
+        ideas_created += 1
+
     db.flush()
     logger.info(
         "content_intelligence_ingested_brief",
         brief_id=brief.id,
         hooks_created=hooks_created,
         patterns_created=patterns_created,
+        ideas_created=ideas_created,
     )
-    return {"hooks_created": hooks_created, "patterns_created": patterns_created}
+    return {"hooks_created": hooks_created, "patterns_created": patterns_created, "ideas_created": ideas_created}
 
 
 def find_or_create_hook(

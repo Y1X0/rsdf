@@ -30,3 +30,14 @@ class ReviewDecisionOut(BaseModel):
     reason_code: str | None
     notes: str | None
     decided_at: datetime
+
+    # Additive (never populated from ReviewDecision's own DB columns —
+    # always set explicitly in api/routers/review.py): reports the Review
+    # -> Publish -> Metrics automatic cascade this decision triggers when
+    # `decision == "approved"`. Both stay None for rejected/revision
+    # decisions and for any caller relying on the pre-cascade response
+    # shape, so this is backward compatible.
+    auto_publish_status: str | None = None
+    auto_publish_detail: str | None = None
+    auto_metrics_status: str | None = None
+    auto_metrics_detail: str | None = None

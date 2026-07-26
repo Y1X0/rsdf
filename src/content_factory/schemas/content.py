@@ -3,6 +3,7 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field
 
 from content_factory.db.models.enums import ProcessingStatus
+from content_factory.schemas.video import VideoOut
 
 
 class ResearchRequest(BaseModel):
@@ -66,3 +67,23 @@ class ScriptOut(BaseModel):
     target_duration_s: int | None
     generation_status: ProcessingStatus
     created_at: datetime
+
+
+class IdeaSelectRequest(BaseModel):
+    num_variants: int = Field(default=3, ge=1, le=10)
+
+
+class IdeaSelectionResult(BaseModel):
+    """Result of the automatic Ideas -> Script -> Render cascade triggered
+    by selecting an idea (the intentional human gate is *which* idea to
+    select, not the mechanical steps after that choice — see
+    api/routers/content.py::select_idea). `stage_reached` and `detail`
+    exist specifically so a partial or empty result (no scripts generated,
+    no video rendered) is reported honestly rather than looking like a
+    silent success."""
+
+    idea: ContentIdeaOut
+    scripts: list[ScriptOut]
+    video: VideoOut | None
+    stage_reached: str
+    detail: str

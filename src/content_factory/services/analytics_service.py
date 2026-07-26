@@ -7,19 +7,23 @@ functions, since callers (API routers) only ever pass in the same
 values regardless of where they originated.
 """
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from content_factory.analytics_ingestion.base import MetricsNotAutomated
+from content_factory.config import Settings
+from content_factory.db.models.account import OwnedAccount
 from content_factory.db.models.agent_run import AgentRun
 from content_factory.db.models.analytics import CostLedger, MetricsSnapshot, RevenueSnapshot, ViralScoreRecord
 from content_factory.db.models.campaign import Campaign
-from content_factory.db.models.enums import VideoStatus
+from content_factory.db.models.enums import PublicationStatus, VideoStatus
 from content_factory.db.models.publication import Publication
 from content_factory.db.models.video import Video
 from content_factory.logging_config import get_logger
-from content_factory.services import content_intelligence
+from content_factory.services import content_intelligence, token_encryption
 
 logger = get_logger(__name__)
 
@@ -325,3 +329,61 @@ def get_dashboard_summary(db: Session) -> dict:
         "total_revenue_usd": total_revenue,
         "profit_usd": round(total_revenue - total_cost, 4),
     }
+
+
+@dataclass
+class AutoMetricsSyncOutcome:
+    """Result of the Publish -> Metrics automatic cascade
+    (`attempt_auto_metrics_sync`, called from api/routers/review.py right
+    after a successful auto-publish). "not_applicable" covers the honest,
+    expected default case: ManualPublishingProvider never actually
+    publishes (Publication.status stays SCHEDULED, not PUBLISHED), so
+    there is nothing yet to sync metrics for - a human posts it manually
+    and then either a real platform integration or POST
+    /videos/{id}/metrics records the result, same as it always has.
+    "not_automated" is the equivalent honest outcome one level further in:
+    really published, but no real platform Analytics API is configured."""
+
+    status: str
+    detail: str
+
+
+def attempt_auto_metrics_sync(db: Session, *, publication: Publication, settings: Settings) -> AutoMetricsSyncOutcome:
+    if publication.status != PublicationStatus.PUBLISHED or not publication.external_post_id:
+        return AutoMetricsSyncOutcome(
+            status="not_applicable",
+            detail="Publication is not actually published yet (no real platform credentials configured) - "
+            "nothing to sync. Enter metrics manually via POST /videos/{id}/metrics once posted.",
+        )
+
+    from content_factory.analytics_ingestion.factory import get_analytics_provider
+
+    account = db.get(OwnedAccount, publication.account_id)
+    video = db.get(Video, publication.video_id)
+    access_token = token_encryption.resolve_access_token_or_none(account, settings)
+    provider = get_analytics_provider(publication.platform, settings, access_token=access_token)
+
+    try:
+        fetched = provider.fetch_metrics(external_post_id=publication.external_post_id)
+    except MetricsNotAutomated as exc:
+        return AutoMetricsSyncOutcome(status="not_automated", detail=str(exc))
+    except Exception as exc:
+        logger.error("auto_metrics_sync_failed", publication_id=publication.id, exc_info=True)
+        return AutoMetricsSyncOutcome(status="failed", detail=f"Auto metrics sync failed: {exc}")
+
+    snapshot, score = record_metrics(
+        db,
+        video=video,
+        views=fetched.views,
+        avg_watch_time_s=fetched.avg_watch_time_s,
+        completion_rate=fetched.completion_rate,
+        rewatch_rate=fetched.rewatch_rate,
+        shares=fetched.shares,
+        comments=fetched.comments,
+        likes=fetched.likes,
+        saves=fetched.saves,
+        source=publication.platform.value,
+    )
+    return AutoMetricsSyncOutcome(
+        status="recorded", detail=f"views={snapshot.views}, viral_score={float(score.score):.3f}"
+    )

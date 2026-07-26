@@ -33,6 +33,8 @@ from content_factory.services.media_backup import MediaBackupProvider
 from content_factory.schemas.content import (
     ContentIdeaCreate,
     ContentIdeaOut,
+    IdeaSelectionResult,
+    IdeaSelectRequest,
     ResearchBriefOut,
     ResearchRequest,
     ScriptGenerateRequest,
@@ -148,6 +150,111 @@ def list_ideas(
     return [ContentIdeaOut.model_validate(i) for i in ideas]
 
 
+@router.post("/ideas/{idea_id}/select", response_model=IdeaSelectionResult)
+def select_idea(
+    idea_id: int,
+    payload: IdeaSelectRequest,
+    db: Session = Depends(get_db),
+    llm_client: LLMClient = Depends(get_llm_client),
+    tts_provider: TTSProvider = Depends(get_tts_provider),
+    video_renderer: VideoRenderer = Depends(get_video_renderer),
+    notification_provider: NotificationProvider = Depends(get_notification_provider),
+    media_backup_provider: MediaBackupProvider = Depends(get_media_backup_provider),
+    _principal: dict = Depends(require_operator),
+) -> IdeaSelectionResult:
+    """The one mandatory human gate between Ideas and Script (per
+    docs/PILOT_PLAN.md §1.3): a human picks *which* idea proceeds, but
+    everything mechanically downstream of that choice — script generation,
+    rendering, automated QC, the quality gate — runs automatically in this
+    single call, with no further manual endpoint calls needed to reach
+    PENDING_REVIEW (or an auto-rejection, which is itself a normal,
+    honestly-reported outcome, not a failure of this endpoint)."""
+    idea = db.get(ContentIdea, idea_id)
+    if idea is None:
+        raise HTTPException(status_code=404, detail="Content idea not found")
+    if idea.status == "rejected":
+        raise HTTPException(status_code=409, detail="This idea was already rejected and cannot be selected")
+
+    idea.status = "selected"
+    db.flush()
+    niche_id = idea.campaign.niche_id if idea.campaign else None
+
+    budget_governor.enforce_budget(db, niche_id=niche_id, notification_provider=notification_provider)
+    scripts = _generate_scripts_for_idea(
+        db,
+        idea=idea,
+        llm_client=llm_client,
+        num_variants=payload.num_variants,
+        idempotency_key=f"auto-select-idea-{idea_id}-scripts",
+    )
+
+    if not scripts:
+        logger.warning("idea_selection_cascade_stopped_no_scripts", idea_id=idea_id)
+        return IdeaSelectionResult(
+            idea=ContentIdeaOut.model_validate(idea),
+            scripts=[],
+            video=None,
+            stage_reached="selected",
+            detail=(
+                "Idea selected, but script generation produced no usable variants "
+                "(empty or unparseable LLM response) - nothing to render. "
+                "Check the configured LLM provider and retry via POST /ideas/{id}/scripts."
+            ),
+        )
+
+    # The first variant is rendered automatically; the remaining variants
+    # stay available (GET /ideas/{id}/scripts) for a human to render
+    # manually instead via the existing POST /scripts/{id}/render if they'd
+    # rather try a different one.
+    chosen_script = scripts[0]
+    budget_governor.enforce_budget(db, niche_id=niche_id, notification_provider=notification_provider)
+    video = _render_script_to_video(
+        db,
+        script=chosen_script,
+        tts_provider=tts_provider,
+        video_renderer=video_renderer,
+        media_backup_provider=media_backup_provider,
+        template_id=None,
+        idempotency_key=f"auto-select-idea-{idea_id}-render",
+    )
+
+    logger.info(
+        "idea_selection_cascade_completed",
+        idea_id=idea_id,
+        script_count=len(scripts),
+        chosen_script_id=chosen_script.id,
+        video_id=video.id,
+        video_status=video.status.value,
+    )
+    return IdeaSelectionResult(
+        idea=ContentIdeaOut.model_validate(idea),
+        scripts=[ScriptOut.model_validate(s) for s in scripts],
+        video=to_video_out(db, video),
+        stage_reached="rendered",
+        detail=(
+            f"Video #{video.id} is {video.status.value} (rendered from script #{chosen_script.id}, "
+            f"variant {chosen_script.variant_label!r} of {len(scripts)}). "
+            + (
+                "Awaiting the mandatory pre-publish human review."
+                if video.status == VideoStatus.PENDING_REVIEW
+                else "Auto-rejected by the quality gate before reaching human review."
+            )
+        ),
+    )
+
+
+@router.post("/ideas/{idea_id}/reject", response_model=ContentIdeaOut)
+def reject_idea(
+    idea_id: int, db: Session = Depends(get_db), _principal: dict = Depends(require_operator)
+) -> ContentIdeaOut:
+    idea = db.get(ContentIdea, idea_id)
+    if idea is None:
+        raise HTTPException(status_code=404, detail="Content idea not found")
+    idea.status = "rejected"
+    db.flush()
+    return ContentIdeaOut.model_validate(idea)
+
+
 @dataclass
 class _ScriptBatchAnchor:
     """Idempotency's storage model expects one entity with an `.id`, but
@@ -158,6 +265,45 @@ class _ScriptBatchAnchor:
 
     id: int
     scripts: list[Script] = field(default_factory=list)
+
+
+def _generate_scripts_for_idea(
+    db: Session,
+    *,
+    idea: ContentIdea,
+    llm_client: LLMClient,
+    num_variants: int,
+    idempotency_key: str | None,
+) -> list[Script]:
+    """Shared by the manual `POST /ideas/{id}/scripts` endpoint and the
+    automatic Ideas -> Script -> Render cascade (`POST /ideas/{id}/select`)
+    — one idempotency-protected code path either way, so a human manually
+    generating scripts for an idea that was *also* auto-selected can never
+    duplicate the LLM spend."""
+    niche_id = idea.campaign.niche_id if idea.campaign else None
+
+    def _load_existing(anchor_id: int) -> _ScriptBatchAnchor:
+        scripts = db.query(Script).filter(Script.idea_id == anchor_id).order_by(Script.id).all()
+        return _ScriptBatchAnchor(id=anchor_id, scripts=scripts)
+
+    def _work() -> _ScriptBatchAnchor:
+        agent = ScriptAgent(llm_client)
+        hooks = content_intelligence.get_top_hooks(db, niche_id=niche_id, limit=5)
+        scripts = agent.generate_variants(db, idea=idea, retrieved_hooks=hooks, num_variants=num_variants)
+        for script in scripts:
+            content_intelligence.record_hook_usage(db, niche_id=niche_id, hook_text=script.hook_text)
+        return _ScriptBatchAnchor(id=idea.id, scripts=scripts)
+
+    batch, _created = idempotency.run_idempotent(
+        db,
+        scope="idea.scripts.generate",
+        idempotency_key=idempotency_key,
+        payload={"idea_id": idea.id, "num_variants": num_variants},
+        entity_type="content_idea",
+        work_fn=_work,
+        load_existing=_load_existing,
+    )
+    return batch.scripts
 
 
 @router.post("/ideas/{idea_id}/scripts", response_model=list[ScriptOut])
@@ -176,28 +322,14 @@ def generate_scripts(
 
     budget_governor.enforce_budget(db, niche_id=niche_id, notification_provider=notification_provider)
 
-    def _load_existing(anchor_id: int) -> _ScriptBatchAnchor:
-        scripts = db.query(Script).filter(Script.idea_id == anchor_id).order_by(Script.id).all()
-        return _ScriptBatchAnchor(id=anchor_id, scripts=scripts)
-
-    def _work() -> _ScriptBatchAnchor:
-        agent = ScriptAgent(llm_client)
-        hooks = content_intelligence.get_top_hooks(db, niche_id=niche_id, limit=5)
-        scripts = agent.generate_variants(db, idea=idea, retrieved_hooks=hooks, num_variants=payload.num_variants)
-        for script in scripts:
-            content_intelligence.record_hook_usage(db, niche_id=niche_id, hook_text=script.hook_text)
-        return _ScriptBatchAnchor(id=idea_id, scripts=scripts)
-
-    batch, _created = idempotency.run_idempotent(
+    scripts = _generate_scripts_for_idea(
         db,
-        scope="idea.scripts.generate",
+        idea=idea,
+        llm_client=llm_client,
+        num_variants=payload.num_variants,
         idempotency_key=payload.idempotency_key,
-        payload={"idea_id": idea_id, "num_variants": payload.num_variants},
-        entity_type="content_idea",
-        work_fn=_work,
-        load_existing=_load_existing,
     )
-    return [ScriptOut.model_validate(s) for s in batch.scripts]
+    return [ScriptOut.model_validate(s) for s in scripts]
 
 
 @router.get("/ideas/{idea_id}/scripts", response_model=list[ScriptOut])
@@ -228,25 +360,20 @@ def get_script(
     return ScriptOut.model_validate(script)
 
 
-@router.post("/scripts/{script_id}/render", response_model=VideoOut)
-def render_script(
-    script_id: int,
-    payload: RenderRequestBody,
-    db: Session = Depends(get_db),
-    tts_provider: TTSProvider = Depends(get_tts_provider),
-    video_renderer: VideoRenderer = Depends(get_video_renderer),
-    notification_provider: NotificationProvider = Depends(get_notification_provider),
-    media_backup_provider: MediaBackupProvider = Depends(get_media_backup_provider),
-    _principal: dict = Depends(require_operator),
-) -> VideoOut:
-    script = db.get(Script, script_id)
-    if script is None:
-        raise HTTPException(status_code=404, detail="Script not found")
+def _render_script_to_video(
+    db: Session,
+    *,
+    script: Script,
+    tts_provider: TTSProvider,
+    video_renderer: VideoRenderer,
+    media_backup_provider: MediaBackupProvider,
+    template_id: str | None,
+    idempotency_key: str | None,
+) -> Video:
+    """Shared by the manual `POST /scripts/{id}/render` endpoint and the
+    automatic Ideas -> Script -> Render cascade — same idempotency
+    protection either way."""
     campaign = script.idea.campaign
-
-    budget_governor.enforce_budget(
-        db, niche_id=campaign.niche_id if campaign else None, notification_provider=notification_provider
-    )
 
     def _load_existing(video_id: int) -> Video:
         return db.get(Video, video_id)
@@ -262,11 +389,11 @@ def render_script(
             script=script,
             tts_provider=tts_provider,
             video_renderer=video_renderer,
-            template_id=payload.template_id or production_service.DEFAULT_TEMPLATE_ID,
+            template_id=template_id or production_service.DEFAULT_TEMPLATE_ID,
             media_backup_provider=media_backup_provider,
         )
         quality = quality_scoring.score_video(
-            db, video=video, script=script, campaign=campaign, niche_id=campaign.niche_id
+            db, video=video, script=script, campaign=campaign, niche_id=campaign.niche_id if campaign else None
         )
 
         settings = get_settings()
@@ -288,11 +415,43 @@ def render_script(
     video, _created = idempotency.run_idempotent(
         db,
         scope="script.render",
-        idempotency_key=payload.idempotency_key,
-        payload={"script_id": script_id, "template_id": payload.template_id},
+        idempotency_key=idempotency_key,
+        payload={"script_id": script.id, "template_id": template_id},
         entity_type="video",
         work_fn=_work,
         load_existing=_load_existing,
+    )
+    return video
+
+
+@router.post("/scripts/{script_id}/render", response_model=VideoOut)
+def render_script(
+    script_id: int,
+    payload: RenderRequestBody,
+    db: Session = Depends(get_db),
+    tts_provider: TTSProvider = Depends(get_tts_provider),
+    video_renderer: VideoRenderer = Depends(get_video_renderer),
+    notification_provider: NotificationProvider = Depends(get_notification_provider),
+    media_backup_provider: MediaBackupProvider = Depends(get_media_backup_provider),
+    _principal: dict = Depends(require_operator),
+) -> VideoOut:
+    script = db.get(Script, script_id)
+    if script is None:
+        raise HTTPException(status_code=404, detail="Script not found")
+    campaign = script.idea.campaign
+
+    budget_governor.enforce_budget(
+        db, niche_id=campaign.niche_id if campaign else None, notification_provider=notification_provider
+    )
+
+    video = _render_script_to_video(
+        db,
+        script=script,
+        tts_provider=tts_provider,
+        video_renderer=video_renderer,
+        media_backup_provider=media_backup_provider,
+        template_id=payload.template_id,
+        idempotency_key=payload.idempotency_key,
     )
     return to_video_out(db, video)
 

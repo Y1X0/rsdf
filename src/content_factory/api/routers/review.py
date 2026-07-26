@@ -10,12 +10,13 @@ from content_factory.api.deps import get_db
 from content_factory.api.pagination import Pagination, pagination_params
 from content_factory.api.serializers import to_video_out
 from content_factory.auth.dependencies import require_auth, require_operator
-from content_factory.db.models.enums import VideoStatus
+from content_factory.config import Settings, get_settings
+from content_factory.db.models.enums import ReviewDecisionType, VideoStatus
 from content_factory.db.models.video import Video
 from content_factory.logging_config import get_logger
 from content_factory.schemas.review import ReviewDecisionOut, ReviewSubmitRequest
 from content_factory.schemas.video import VideoOut
-from content_factory.services import review_service
+from content_factory.services import analytics_service, publishing_service, review_service
 
 logger = get_logger(__name__)
 router = APIRouter(tags=["review"])
@@ -72,6 +73,7 @@ def submit_review(
     video_id: int,
     payload: ReviewSubmitRequest,
     db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
     principal: dict = Depends(require_operator),
 ) -> ReviewDecisionOut:
     video = db.get(Video, video_id)
@@ -95,4 +97,33 @@ def submit_review(
         reason_code=payload.reason_code,
         notes=payload.notes,
     )
-    return ReviewDecisionOut.model_validate(decision)
+    result = ReviewDecisionOut.model_validate(decision)
+
+    # The mandatory human gate is this review decision itself (goal #6);
+    # everything after "approved" - publish, then metrics - proceeds
+    # automatically from here with no further manual endpoint calls
+    # needed, per the same "no stopping between stages" requirement the
+    # Ideas -> Script -> Render cascade already closes. A rejection or
+    # revision request stops the pipeline here, correctly - there is
+    # nothing to auto-publish.
+    if payload.decision == ReviewDecisionType.APPROVED:
+        publish_outcome = publishing_service.attempt_auto_publish(db, video=video, settings=settings)
+        result.auto_publish_status = publish_outcome.status
+        result.auto_publish_detail = publish_outcome.detail
+        logger.info(
+            "auto_publish_cascade_result", video_id=video_id, status=publish_outcome.status,
+            detail=publish_outcome.detail,
+        )
+
+        if publish_outcome.publication is not None:
+            metrics_outcome = analytics_service.attempt_auto_metrics_sync(
+                db, publication=publish_outcome.publication, settings=settings
+            )
+            result.auto_metrics_status = metrics_outcome.status
+            result.auto_metrics_detail = metrics_outcome.detail
+            logger.info(
+                "auto_metrics_sync_cascade_result", video_id=video_id, status=metrics_outcome.status,
+                detail=metrics_outcome.detail,
+            )
+
+    return result

@@ -205,10 +205,18 @@ def test_list_and_get_publication(client):
 
 def test_list_publications_respects_limit_and_offset(client):
     """Production Hardening Sprint H5: GET /publications used to return
-    every row unbounded."""
+    every row unbounded.
+
+    Videos are approved *before* the account is registered (matching
+    every other test in this file) specifically so the Review -> Publish
+    auto-cascade has no eligible account yet and reports "skipped" for
+    each one - this test's own explicit publish calls are then the only
+    Publication rows created, keeping its exact-count assertions accurate
+    regardless of that cascade running.
+    """
+    videos = [_create_approved_video(client) for _ in range(3)]
     account = _create_account(client, daily_post_cap=5)
-    for i in range(3):
-        video = _create_approved_video(client)
+    for i, video in enumerate(videos):
         client.post(
             f"/videos/{video['id']}/publish",
             json={"account_id": account["id"], "title": f"t{i}", "description": "d"},
