@@ -45,21 +45,34 @@ class GroqLLMClient(LLMClient):
             ) from exc
 
         start = time.monotonic()
-        response = httpx.post(
-            _CHAT_COMPLETIONS_URL,
-            headers={"Authorization": f"Bearer {self._api_key}"},
-            json={
-                "model": self._model,
-                "max_tokens": max_tokens,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": prompt},
-                ],
-            },
-            timeout=60.0,
-        )
+        try:
+            response = httpx.post(
+                _CHAT_COMPLETIONS_URL,
+                headers={"Authorization": f"Bearer {self._api_key}"},
+                json={
+                    "model": self._model,
+                    "max_tokens": max_tokens,
+                    "messages": [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": prompt},
+                    ],
+                },
+                timeout=60.0,
+            )
+        except httpx.RequestError as exc:
+            raise RuntimeError(f"Groq API request failed: {exc}") from exc
         duration_ms = int((time.monotonic() - start) * 1000)
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            # Groq's error body (e.g. "model_decommissioned", "rate_limit
+            # exceeded", "invalid_api_key") is the one piece of information
+            # that actually explains a failure — httpx's own exception
+            # message is just the bare status code/reason phrase, which is
+            # useless for diagnosing *why* from agent_runs.error_message or
+            # idempotency_records.error_message (both just store str(exc))
+            # without direct access to this process's logs.
+            raise RuntimeError(f"Groq API error (HTTP {response.status_code}): {response.text}") from exc
         payload = response.json()
 
         text = payload["choices"][0]["message"]["content"] or ""

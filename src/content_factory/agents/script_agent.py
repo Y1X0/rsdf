@@ -84,7 +84,19 @@ class ScriptAgent:
                 variants_data = []
 
             scripts: list[Script] = []
+            skipped_variants = 0
             for i, variant in enumerate(variants_data):
+                # A real LLM's JSON array isn't guaranteed to match the
+                # requested schema item-by-item (a missing field, a plain
+                # string instead of an object, etc.) even when the overall
+                # response parses fine - that's a normal, expected variance
+                # in real provider output, not a bug to crash the whole
+                # batch over. Skip just the malformed item and keep the
+                # rest, the same "degrade gracefully, log why" treatment
+                # already given to a wholly empty/unparseable response.
+                if not isinstance(variant, dict) or not variant.get("hook_text") or not variant.get("full_text"):
+                    skipped_variants += 1
+                    continue
                 script = Script(
                     idea_id=idea.id,
                     variant_label=variant.get("variant_label") or f"variant_{i + 1}",
@@ -99,6 +111,13 @@ class ScriptAgent:
                 db.add(script)
                 scripts.append(script)
             db.flush()
+
+            if skipped_variants:
+                log.warning(
+                    "script_agent_skipped_malformed_variants",
+                    skipped_count=skipped_variants,
+                    total_count=len(variants_data),
+                )
 
             log.info("script_agent_completed", variant_count=len(scripts))
         except Exception:

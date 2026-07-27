@@ -13,6 +13,9 @@ class _FakeResponse:
     def __init__(self, status_code: int, json_body: dict):
         self.status_code = status_code
         self._json_body = json_body
+        import json as _json
+
+        self.text = _json.dumps(json_body)
 
     def json(self) -> dict:
         return self._json_body
@@ -82,10 +85,32 @@ def test_complete_sends_the_configured_model_and_real_messages_shape(monkeypatch
     ]
 
 
-def test_complete_raises_on_http_error_status(monkeypatch):
-    monkeypatch.setattr(httpx, "post", lambda *a, **k: _FakeResponse(401, {"error": "invalid api key"}))
+def test_complete_raises_a_runtime_error_carrying_groqs_actual_error_body_on_http_error_status(monkeypatch):
+    """Regression test for a real production incident: a bare
+    httpx.HTTPStatusError's str() is just "Client error '401 ...'" with no
+    hint of *why* (bad key vs decommissioned model vs rate limit) - and
+    that's all that ever reached agent_runs.error_message /
+    idempotency_records.error_message, with no other way to diagnose a
+    failure without direct log/DB access to wherever this is deployed.
+    The provider must wrap it with Groq's real response body so the actual
+    reason is preserved wherever str(exc) ends up."""
+    monkeypatch.setattr(
+        httpx, "post", lambda *a, **k: _FakeResponse(400, {"error": {"message": "model `x` has been decommissioned"}})
+    )
     client = GroqLLMClient(api_key="bad-key", model="llama-3.3-70b-versatile")
-    with pytest.raises(httpx.HTTPStatusError):
+    with pytest.raises(RuntimeError) as exc_info:
+        client.complete(system="s", prompt="p")
+    assert "400" in str(exc_info.value)
+    assert "decommissioned" in str(exc_info.value)
+
+
+def test_complete_wraps_connection_failures_too(monkeypatch):
+    def _raise_connect_error(*a, **k):
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(httpx, "post", _raise_connect_error)
+    client = GroqLLMClient(api_key="gsk-test-key", model="llama-3.3-70b-versatile")
+    with pytest.raises(RuntimeError, match="Groq API request failed"):
         client.complete(system="s", prompt="p")
 
 

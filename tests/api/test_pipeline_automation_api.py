@@ -71,6 +71,41 @@ def test_select_idea_404_when_missing(client):
     assert resp.status_code == 404
 
 
+def test_select_idea_reports_script_generation_failure_honestly_instead_of_500(client):
+    """Regression test for a real production incident: a real LLM provider
+    failure (bad API key, decommissioned model, rate limit...) raised an
+    unhandled exception out of the script-generation step, and that used
+    to propagate all the way to a bare 500 with no usable detail anywhere
+    the operator could see - the only place the real reason existed was a
+    server log the operator had no access to. This must come back as a
+    normal 200 response with the real failure message, exactly like the
+    already-handled "0 usable variants" case."""
+    from content_factory.api import deps
+    from content_factory.api.main import app
+    from content_factory.llm.providers.fake_provider import FakeLLMClient
+
+    def _boom(system, prompt):
+        raise RuntimeError("Groq API error (HTTP 400): model `x` has been decommissioned")
+
+    campaign = _create_campaign(client)
+    idea = client.post(f"/campaigns/{campaign['id']}/ideas", json={"concept_summary": "idea"}).json()
+
+    original_override = app.dependency_overrides[deps.get_llm_client]
+    app.dependency_overrides[deps.get_llm_client] = lambda: FakeLLMClient(response_builder=_boom)
+    try:
+        resp = client.post(f"/ideas/{idea['id']}/select", json={})
+    finally:
+        app.dependency_overrides[deps.get_llm_client] = original_override
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["idea"]["status"] == "selected"
+    assert body["stage_reached"] == "selected"
+    assert body["scripts"] == []
+    assert body["video"] is None
+    assert "decommissioned" in body["detail"]
+
+
 def test_reject_idea_then_select_is_blocked(client):
     campaign = _create_campaign(client)
     idea = client.post(f"/campaigns/{campaign['id']}/ideas", json={"concept_summary": "idea"}).json()

@@ -180,13 +180,30 @@ def select_idea(
     niche_id = idea.campaign.niche_id if idea.campaign else None
 
     budget_governor.enforce_budget(db, niche_id=niche_id, notification_provider=notification_provider)
-    scripts = _generate_scripts_for_idea(
-        db,
-        idea=idea,
-        llm_client=llm_client,
-        num_variants=payload.num_variants,
-        idempotency_key=f"auto-select-idea-{idea_id}-scripts",
-    )
+    try:
+        scripts = _generate_scripts_for_idea(
+            db,
+            idea=idea,
+            llm_client=llm_client,
+            num_variants=payload.num_variants,
+            idempotency_key=f"auto-select-idea-{idea_id}-scripts",
+        )
+    except Exception as exc:
+        # A raised exception here is always some real external-provider
+        # failure (bad/missing API key, rate limit, decommissioned model,
+        # network error - agent_run()/run_idempotent() already logged and
+        # durably recorded it). That's an expected, handleable outcome for
+        # this cascade, exactly like the "0 usable variants" case below -
+        # it must be reported back honestly, not left to fall through to a
+        # bare 500 with no detail anywhere the caller can see it.
+        logger.error("idea_selection_cascade_script_generation_failed", idea_id=idea_id, error=str(exc))
+        return IdeaSelectionResult(
+            idea=ContentIdeaOut.model_validate(idea),
+            scripts=[],
+            video=None,
+            stage_reached="selected",
+            detail=f"Idea selected, but script generation failed: {exc}",
+        )
 
     if not scripts:
         logger.warning("idea_selection_cascade_stopped_no_scripts", idea_id=idea_id)
@@ -208,15 +225,30 @@ def select_idea(
     # rather try a different one.
     chosen_script = scripts[0]
     budget_governor.enforce_budget(db, niche_id=niche_id, notification_provider=notification_provider)
-    video = _render_script_to_video(
-        db,
-        script=chosen_script,
-        tts_provider=tts_provider,
-        video_renderer=video_renderer,
-        media_backup_provider=media_backup_provider,
-        template_id=None,
-        idempotency_key=f"auto-select-idea-{idea_id}-render",
-    )
+    try:
+        video = _render_script_to_video(
+            db,
+            script=chosen_script,
+            tts_provider=tts_provider,
+            video_renderer=video_renderer,
+            media_backup_provider=media_backup_provider,
+            template_id=None,
+            idempotency_key=f"auto-select-idea-{idea_id}-render",
+        )
+    except Exception as exc:
+        logger.error(
+            "idea_selection_cascade_render_failed", idea_id=idea_id, script_id=chosen_script.id, error=str(exc)
+        )
+        return IdeaSelectionResult(
+            idea=ContentIdeaOut.model_validate(idea),
+            scripts=[ScriptOut.model_validate(s) for s in scripts],
+            video=None,
+            stage_reached="script_generated",
+            detail=(
+                f"{len(scripts)} script variant(s) generated, but rendering script #{chosen_script.id} "
+                f"failed: {exc}. Retry via POST /scripts/{{id}}/render once the underlying issue is fixed."
+            ),
+        )
 
     logger.info(
         "idea_selection_cascade_completed",

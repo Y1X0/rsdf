@@ -64,6 +64,43 @@ def test_generate_variants_marks_agent_run_failed_and_reraises_on_error(db_sessi
     assert run.error_message == "rate limited"
 
 
+def test_generate_variants_skips_malformed_items_instead_of_crashing_the_whole_batch(db_session):
+    """Regression test for a real production incident: a genuinely valid,
+    non-empty JSON array response (so parse_json_response's own
+    empty/unparseable-response fallback never triggers) can still contain
+    an item that doesn't match the requested schema exactly - a real LLM's
+    per-item output isn't guaranteed uniform even when the outer array is
+    well-formed. That used to raise an unhandled KeyError/TypeError deep in
+    the script-construction loop, surfacing as a bare 500 with no usable
+    detail anywhere the operator could see. It must now skip just the bad
+    item(s) and keep whatever's usable."""
+    canned = [
+        {"variant_label": "v1", "hook_text": "hook 1", "full_text": "full 1"},
+        {"variant_label": "v2", "hook_text": "hook 2"},  # missing full_text
+        "just a string, not an object",  # wrong shape entirely
+        {"variant_label": "v4", "full_text": "full 4"},  # missing hook_text
+        {"variant_label": "v5", "hook_text": "hook 5", "full_text": "full 5"},
+    ]
+    llm = FakeLLMClient(response_builder=lambda system, prompt: json.dumps(canned))
+    agent = ScriptAgent(llm)
+    idea = _idea(db_session)
+
+    scripts = agent.generate_variants(db_session, idea=idea, retrieved_hooks=[], num_variants=5)
+
+    assert len(scripts) == 2
+    assert {s.hook_text for s in scripts} == {"hook 1", "hook 5"}
+
+
+def test_generate_variants_returns_empty_list_when_every_item_is_malformed(db_session):
+    canned = [{"variant_label": "v1"}, "nonsense", {"hook_text": "only a hook, no full_text"}]
+    llm = FakeLLMClient(response_builder=lambda system, prompt: json.dumps(canned))
+    agent = ScriptAgent(llm)
+    idea = _idea(db_session)
+
+    scripts = agent.generate_variants(db_session, idea=idea, retrieved_hooks=[], num_variants=3)
+    assert scripts == []
+
+
 def test_default_fake_llm_response_yields_empty_list_when_no_builder_given(db_session):
     """Exercises the production safe-degradation default (no API key
     configured) directly — must not crash, must produce an empty, clearly
