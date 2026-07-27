@@ -689,12 +689,13 @@ async function renderVideos(view) {
     <div class="card">
       <h2>بانتظار المراجعة</h2>
       <button class="secondary" onclick="loadPendingReview()">تحديث</button>
-      <table><thead><tr><th>ID</th><th>الحالة</th><th>الإنتاج</th><th>الجودة</th><th></th></tr></thead><tbody id="pendingTbody"></tbody></table>
+      <table><thead><tr><th>ID</th><th>الحالة</th><th>الإنتاج</th><th>الجودة</th><th></th><th></th></tr></thead><tbody id="pendingTbody"></tbody></table>
     </div>
     <div class="card">
       <h2>كل الفيديوهات</h2>
       <button class="secondary" onclick="loadAllVideos()">تحديث</button>
-      <table><thead><tr><th>ID</th><th>الحالة</th><th>الإنتاج</th><th>الملف</th></tr></thead><tbody id="allVideosTbody"></tbody></table>
+      <div class="sub">"فتح الملف" يفتح ما أنتجه الرندرر فعليًا — فيديو حقيقي (mp4) إذا كان محرك الإنتاج template_pillow، أو ملف وصف (manifest.json) إذا كان لا يزال null.</div>
+      <table><thead><tr><th>ID</th><th>الحالة</th><th>الإنتاج</th><th>الملف</th><th></th></tr></thead><tbody id="allVideosTbody"></tbody></table>
     </div>
     <div class="card" id="reviewCard" style="display:none">
       <h2>مراجعة الفيديو <span id="reviewVideoLabel"></span></h2>
@@ -738,10 +739,14 @@ async function loadPendingReview() {
     tbody.innerHTML = data.map((v, idx) => `<tr>
       <td>${v.id}</td><td><span class="pill warn">${escapeHtml(v.status)}</span></td><td>${escapeHtml(v.render_status)}</td>
       <td>${v.quality_score ? (v.quality_score.originality_score ?? '-') : '-'}</td>
-      <td><button data-review-idx="${idx}" style="margin:0">مراجعة</button></td></tr>`).join('') ||
-      '<tr><td colspan="5" class="sub">لا يوجد فيديوهات بانتظار المراجعة</td></tr>';
+      <td><button data-review-idx="${idx}" style="margin:0">مراجعة</button></td>
+      <td><button class="secondary" data-file-id="${v.id}" style="margin:0" ${v.asset_url ? '' : 'disabled'}>فتح الملف</button></td></tr>`).join('') ||
+      '<tr><td colspan="6" class="sub">لا يوجد فيديوهات بانتظار المراجعة</td></tr>';
     tbody.querySelectorAll('[data-review-idx]').forEach(btn => {
       btn.onclick = () => openReview(data[parseInt(btn.dataset.reviewIdx, 10)]);
+    });
+    tbody.querySelectorAll('[data-file-id]').forEach(btn => {
+      btn.onclick = () => openVideoFile(parseInt(btn.dataset.fileId, 10));
     });
   } catch (e) {
     logLine('تعذر تحميل قائمة المراجعة: ' + e.message);
@@ -753,10 +758,34 @@ async function loadAllVideos() {
     const data = await api('/videos?limit=50');
     const tbody = document.getElementById('allVideosTbody');
     tbody.innerHTML = data.map(v =>
-      `<tr><td>${v.id}</td><td>${escapeHtml(v.status)}</td><td>${escapeHtml(v.render_status)}</td><td class="sub">${escapeHtml(v.asset_url || '-')}</td></tr>`
-    ).join('') || '<tr><td colspan="4" class="sub">لا يوجد فيديوهات بعد</td></tr>';
+      `<tr><td>${v.id}</td><td>${escapeHtml(v.status)}</td><td>${escapeHtml(v.render_status)}</td><td class="sub">${escapeHtml(v.asset_url || '-')}</td>` +
+      `<td><button class="secondary" data-file-id="${v.id}" style="margin:0" ${v.asset_url ? '' : 'disabled'}>فتح الملف</button></td></tr>`
+    ).join('') || '<tr><td colspan="5" class="sub">لا يوجد فيديوهات بعد</td></tr>';
+    tbody.querySelectorAll('[data-file-id]').forEach(btn => {
+      btn.onclick = () => openVideoFile(parseInt(btn.dataset.fileId, 10));
+    });
   } catch (e) {
     logLine('تعذر تحميل قائمة الفيديوهات: ' + e.message);
+  }
+}
+
+async function openVideoFile(videoId) {
+  try {
+    const token = getToken();
+    const headers = token ? { Authorization: 'Bearer ' + token } : {};
+    const res = await fetch(`/videos/${videoId}/file`, { headers });
+    if (!res.ok) {
+      let detail = res.status;
+      try { detail = (await res.json()).detail || detail; } catch (e) { /* ignore */ }
+      throw new Error(detail);
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    window.open(url, '_blank');
+    logLine(`فتح ملف الفيديو #${videoId} (${blob.type || 'نوع غير معروف'}, ${blob.size} بايت)`);
+  } catch (e) {
+    logLine(`تعذر فتح ملف الفيديو #${videoId}: ${e.message}`);
+    alert('تعذر فتح الملف: ' + e.message);
   }
 }
 

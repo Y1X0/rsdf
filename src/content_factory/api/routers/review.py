@@ -3,7 +3,10 @@ minimal dashboard/API surface. Every route requires authentication;
 submitting a review requires the operator role and always uses the
 authenticated principal as the reviewer identity (PHASE1_AUDIT.md F2)."""
 
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from content_factory.api.deps import get_db
@@ -66,6 +69,40 @@ def get_video(
     if video is None:
         raise HTTPException(status_code=404, detail="Video not found")
     return to_video_out(db, video)
+
+
+@router.get("/videos/{video_id}/file")
+def download_video_file(
+    video_id: int,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+    _principal: dict = Depends(require_auth),
+) -> FileResponse:
+    """Serves the actual rendered asset from local disk. `Video.asset_url`
+    (set by whichever VideoRenderer produced it - see video_production/
+    renderer/providers/*.py) has only ever been a raw server-local
+    filesystem path, never a URL - there was no route anywhere that turned
+    it into something a browser could actually open. `media_type` is left
+    for FileResponse to guess from the extension (a real .mp4 renders
+    inline; a NullRenderer's manifest .json downloads/opens as text - both
+    honestly reflect what was actually produced, not a fabricated "video"
+    the renderer never made)."""
+    video = db.get(Video, video_id)
+    if video is None:
+        raise HTTPException(status_code=404, detail="Video not found")
+    if not video.asset_url:
+        raise HTTPException(status_code=404, detail="No rendered file exists for this video yet")
+
+    asset_path = Path(video.asset_url).resolve()
+    media_root = settings.media_storage_path().resolve()
+    if not asset_path.is_relative_to(media_root):
+        # asset_url is always server-generated, never taken from a request -
+        # this is defense in depth, not a response to any real observed path
+        raise HTTPException(status_code=404, detail="File not found")
+    if not asset_path.is_file():
+        raise HTTPException(status_code=404, detail="Rendered file is missing from disk")
+
+    return FileResponse(asset_path, filename=asset_path.name)
 
 
 @router.post("/videos/{video_id}/review", response_model=ReviewDecisionOut)

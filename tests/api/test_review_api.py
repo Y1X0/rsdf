@@ -48,6 +48,36 @@ def test_review_missing_video_returns_404(client):
     assert resp.status_code == 404
 
 
+def test_download_video_file_serves_the_actual_rendered_asset(client, tmp_media_dir, monkeypatch):
+    """Regression test for a real gap: Video.asset_url has only ever been
+    a raw server-local filesystem path (see every VideoRenderer provider),
+    with no route anywhere that turned it into something a browser could
+    actually open - `GET /videos/{id}/file` closes that."""
+    from content_factory.config import get_settings
+
+    # In real deployments, video_production/renderer/factory.py always
+    # builds every provider's storage_dir from settings.media_storage_path()
+    # - so this endpoint's own use of that same setting lines up with
+    # wherever the file actually is. The test fixtures use a separate
+    # tmp_media_dir for the renderer, so this aligns Settings to match,
+    # exactly reproducing real production wiring instead of a fixture-only
+    # coincidence.
+    monkeypatch.setenv("MEDIA_STORAGE_DIR", str(tmp_media_dir))
+    get_settings.cache_clear()
+    try:
+        video = _create_video(client)
+        resp = client.get(f"/videos/{video['id']}/file")
+        assert resp.status_code == 200
+        assert resp.content  # the null renderer's manifest file has real bytes
+    finally:
+        get_settings.cache_clear()
+
+
+def test_download_video_file_404_when_video_missing(client):
+    resp = client.get("/videos/999999/file")
+    assert resp.status_code == 404
+
+
 def test_list_videos_respects_limit_and_offset(client):
     """Production Hardening Sprint H5: GET /videos used to return every
     row unbounded."""
