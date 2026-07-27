@@ -93,8 +93,13 @@ def transcribe_source_video(
         db.flush()
         log.info("source_video_transcribed", segment_count=len(result.segments))
     except Exception:
+        # commit(), not flush(): api/deps.get_db() rolls back the whole
+        # session when this exception reaches it, which would otherwise
+        # silently wipe this status write and leave the row stuck showing
+        # IN_PROGRESS forever - the exact same "P0" commit-boundary lesson
+        # agent_run() itself already applies (see agents/base.py).
         source_video.transcription_status = ProcessingStatus.FAILED
-        db.flush()
+        db.commit()
         log.error("source_video_transcription_failed", exc_info=True)
         raise
 
@@ -163,8 +168,10 @@ def analyze_source_video(
         db.flush()
         log.info("source_video_analyzed", clip_count=len(clips))
     except Exception:
+        # commit(), not flush() - same reasoning as transcribe_source_video's
+        # own except block above.
         source_video.analysis_status = ProcessingStatus.FAILED
-        db.flush()
+        db.commit()
         log.error("source_video_analysis_failed", exc_info=True)
         raise
 
@@ -284,10 +291,16 @@ def render_clip(db: Session, *, clip: Clip, source_video: SourceVideo, clip_rend
         if qc_status != "passed":
             log.warning("clip_automated_qc_failed", notes=qc_notes)
     except Exception:
+        # commit(), not flush() - same reasoning as transcribe_source_video's
+        # own except block above. In practice this path is always reached
+        # through idempotency.run_idempotent(), whose own except block
+        # already commits regardless - but committing here too removes the
+        # implicit dependency on that caller behavior, matching the other
+        # two functions in this module for the same reason.
         video.render_status = ProcessingStatus.FAILED
         video.status = VideoStatus.RENDER_FAILED
         video.render_completed_at = datetime.now(UTC)
-        db.flush()
+        db.commit()
         log.error("clip_render_failed", exc_info=True)
         raise
 
