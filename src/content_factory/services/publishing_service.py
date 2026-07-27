@@ -155,8 +155,15 @@ def publish_video(
         db.flush()
         log.info("video_published", status=publication.status.value, provider=result.provider)
     except Exception:
+        # commit(), not flush() - same P0-1/P0-2 commit-boundary reasoning
+        # as production_service.render_video's own except block. Currently
+        # masked in practice: the two current callers either wrap this in
+        # idempotency.run_idempotent() (api/routers/publications.py, whose
+        # own except block already commits) or swallow the exception
+        # without re-raising (attempt_auto_publish below) - but committing
+        # here too removes the implicit dependency on either behavior.
         publication.status = PublicationStatus.FAILED
-        db.flush()
+        db.commit()
         log.error("video_publish_failed", exc_info=True)
         raise
 

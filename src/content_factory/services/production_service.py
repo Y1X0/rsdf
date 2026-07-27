@@ -162,10 +162,19 @@ def render_video(
         if not qc_result.passed:
             log.warning("automated_qc_failed", checks=qc_result.checks, notes=qc_result.notes)
     except Exception:
+        # commit(), not flush(): api/deps.get_db() rolls back the whole
+        # session if this exception reaches it, which would otherwise
+        # silently wipe this status write - the same P0-1/P0-2 commit-
+        # boundary lesson agent_run() itself already applies. Currently
+        # masked in practice (this function is always called through
+        # idempotency.run_idempotent(), whose own except block already
+        # commits regardless - see api/routers/content.py's
+        # _render_script_to_video), but committing here too removes the
+        # implicit dependency on that caller behavior.
         video.render_status = ProcessingStatus.FAILED
         video.status = VideoStatus.RENDER_FAILED
         video.render_completed_at = datetime.now(UTC)
-        db.flush()
+        db.commit()
         log.error("production_failed", exc_info=True)
         raise
 

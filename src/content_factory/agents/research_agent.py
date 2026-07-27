@@ -102,9 +102,16 @@ class ResearchAgent:
                 pattern_count=len(data.get("competitor_patterns", [])),
             )
         except Exception:
+            # commit(), not flush() - same P0-1/P0-2 commit-boundary
+            # reasoning as production_service.render_video's own except
+            # block. Currently masked in practice (always called through
+            # idempotency.run_idempotent(), whose own except block already
+            # commits - see api/routers/content.py's run_research), but
+            # committing here too removes the implicit dependency on that
+            # caller behavior.
             brief.status = ProcessingStatus.FAILED
             brief.completed_at = datetime.now(UTC)
-            db.flush()
+            db.commit()
             log.error("research_agent_failed", exc_info=True)
             raise
 
