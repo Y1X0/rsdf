@@ -16,7 +16,22 @@ imageio_ffmpeg = pytest.importorskip("imageio_ffmpeg")
 
 from content_factory.transcription.base import TranscriptSegment  # noqa: E402
 from content_factory.video_clipping.base import ClipRenderRequest  # noqa: E402
-from content_factory.video_clipping.providers.ffmpeg_clip_renderer import FfmpegClipRenderer  # noqa: E402
+from content_factory.video_clipping.providers.ffmpeg_clip_renderer import (  # noqa: E402
+    _FRAME_SIZE,
+    FfmpegClipRenderer,
+)
+
+
+def _ffprobe_dimensions(ffmpeg_bin, path) -> tuple[int, int]:
+    result = subprocess.run([ffmpeg_bin, "-i", str(path)], capture_output=True, text=True)
+    for line in result.stderr.splitlines():
+        if "Video:" in line:
+            for token in line.split(","):
+                token = token.strip()
+                if "x" in token and token.split("x")[0].strip().isdigit():
+                    w, h = token.split()[0].split("x")
+                    return int(w), int(h)
+    raise AssertionError(f"could not find video dimensions in ffmpeg output:\n{result.stderr}")
 
 
 @pytest.fixture(scope="module")
@@ -62,6 +77,13 @@ def test_render_actually_cuts_the_requested_range(tmp_path, sample_video):
     assert asset_path.stat().st_size > 0
     assert result.thumbnail_url is not None
     assert Path(result.thumbnail_url).exists()
+
+    # Regression guard for a real production incident: proves the
+    # memory-reduction fix actually took effect (a crash under 1080x1920 +
+    # default preset on a memory-constrained host), not just that *a* file
+    # got produced.
+    width, height = _ffprobe_dimensions(imageio_ffmpeg.get_ffmpeg_exe(), asset_path)
+    assert (width, height) == _FRAME_SIZE
 
 
 def test_render_without_hook_or_segments_still_produces_a_real_file(tmp_path, sample_video):

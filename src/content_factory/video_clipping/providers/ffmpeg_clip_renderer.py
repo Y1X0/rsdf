@@ -30,7 +30,13 @@ from pathlib import Path
 from content_factory.transcription.base import TranscriptSegment
 from content_factory.video_clipping.base import ClipRenderer, ClipRenderRequest, ClipRenderResult
 
-_FRAME_SIZE = (1080, 1920)  # 9:16 short-form, matching TemplatePillowRenderer
+# 9:16 short-form. Matches TemplatePillowRenderer's own reduced size and
+# for the identical, measured reason: a real production incident showed
+# the container crashing outright under a free-hosting-tier memory limit
+# while encoding at full 1080x1920 with ffmpeg's default preset - this
+# renderer decodes a real, potentially much larger source video on top of
+# that, so it is at least as exposed to the same failure mode.
+_FRAME_SIZE = (540, 960)
 _HOOK_DURATION_S = 3.0
 
 
@@ -114,6 +120,12 @@ class FfmpegClipRenderer(ClipRenderer):
                 "-t", str(duration_s),
                 "-vf", ",".join(vf_parts),
                 "-c:v", "libx264",
+                # Same memory-reduction pair as TemplatePillowRenderer, same
+                # measured reasoning: ultrafast cuts libx264's own buffers
+                # substantially; a bounded thread count avoids the encoder
+                # oversubscribing a tiny, memory-constrained host.
+                "-preset", "ultrafast",
+                "-threads", "1",
                 "-c:a", "aac",
                 str(asset_path),
             ]
