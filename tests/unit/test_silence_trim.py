@@ -56,8 +56,26 @@ def test_returns_input_unchanged_for_a_nonexistent_file(tmp_path):
 
 def test_returns_input_unchanged_when_range_is_all_speech(video_with_leading_and_trailing_silence):
     """The tone-only middle section (1.0-3.0s) has no silence at either
-    edge, so nothing should be trimmed."""
-    result = trim_leading_trailing_silence(
+    edge, so nothing meaningful should be trimmed - real encoded audio's
+    silence boundary lands a fraction of a millisecond off the nominal
+    1.0/3.0 (real encoder frame quantization, not a logic error), so this
+    checks "negligible or no change" rather than bit-exact equality."""
+    trimmed_start, trimmed_end = trim_leading_trailing_silence(
         str(video_with_leading_and_trailing_silence), start_s=1.0, end_s=3.0
     )
-    assert result == (1.0, 3.0)
+    assert trimmed_start == pytest.approx(1.0, abs=0.01)
+    assert trimmed_end == pytest.approx(3.0, abs=0.01)
+
+
+def test_trims_correctly_when_the_clips_own_start_lands_mid_silence(video_with_leading_and_trailing_silence):
+    """Regression test for a real bug found running the full pipeline live
+    (not just this unit test in isolation): a clip whose selected start_s
+    (0.5) lands *inside* an already-ongoing leading silence (0.0-1.0),
+    rather than exactly at the silence's own start, must still be
+    detected and trimmed - an earlier implementation using `-ss` input
+    seeking reported inconsistent timestamps for exactly this shape of
+    query and silently failed to trim anything."""
+    trimmed_start, trimmed_end = trim_leading_trailing_silence(
+        str(video_with_leading_and_trailing_silence), start_s=0.5, end_s=4.0
+    )
+    assert trimmed_start == pytest.approx(1.0, abs=0.1)
