@@ -16,6 +16,36 @@ def test_dashboard_summary_reflects_pipeline_state(client):
     assert summary["video_counts_by_status"].get("pending_review") == 1
 
 
+def test_dashboard_ui_serves_the_operator_frontend(client):
+    """The success criterion for the frontend work: opening the site shows
+    a working multi-page dashboard, not just Swagger. This is a static
+    file (unauthenticated, excluded from the OpenAPI schema — see
+    api/main.py), so it just needs to serve the real page and expose every
+    required page's route in its client-side router."""
+    resp = client.get("/dashboard")
+    assert resp.status_code == 200
+    assert "text/html" in resp.headers["content-type"]
+    body = resp.text
+    for route in ["#/login", "#/dashboard", "#/campaigns", "#/pipeline", "#/ideas", "#/scripts", "#/videos", "#/settings"]:
+        assert f"'{route}'" in body
+
+
+def test_dashboard_settings_reports_provider_status_without_secrets(client):
+    resp = client.get("/dashboard/settings")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["llm_provider"] in {"anthropic", "groq", "fake"}
+    assert body["renderer_backend"] in {"template_pillow", "null"}
+    assert body["environment"] == "development"
+    assert "api_key" not in str(body).lower()
+    assert "secret" not in str(body).lower()
+
+
+def test_dashboard_settings_requires_authentication(unauthenticated_client):
+    resp = unauthenticated_client.get("/dashboard/settings")
+    assert resp.status_code == 401
+
+
 def test_health_endpoint(client):
     """Production Hardening Sprint H6: /health now reports a per-dependency
     checks dict (previously a bare {"status": "ok"}), so a caller can tell

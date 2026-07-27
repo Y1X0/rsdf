@@ -9,7 +9,8 @@ from sqlalchemy.orm import Session
 
 from content_factory.api.deps import get_db
 from content_factory.auth.dependencies import require_auth
-from content_factory.schemas.dashboard import DashboardSummaryOut
+from content_factory.config import Settings, get_settings
+from content_factory.schemas.dashboard import DashboardSummaryOut, SettingsStatusOut
 from content_factory.services import analytics_service
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
@@ -21,3 +22,21 @@ def dashboard_summary(
 ) -> DashboardSummaryOut:
     summary = analytics_service.get_dashboard_summary(db)
     return DashboardSummaryOut(**summary)
+
+
+@router.get("/settings", response_model=SettingsStatusOut)
+def dashboard_settings(
+    settings: Settings = Depends(get_settings), _principal: dict = Depends(require_auth)
+) -> SettingsStatusOut:
+    return SettingsStatusOut(
+        environment=settings.environment,
+        llm_provider=settings.llm_provider,
+        tts_provider=settings.tts_provider,
+        renderer_backend=settings.renderer_backend,
+        clip_renderer_backend=settings.clip_renderer_backend,
+        transcription_provider=settings.transcription_provider,
+        notification_provider=settings.notification_provider,
+        publishing_enabled=settings.publishing_enabled,
+        media_backup_enabled=settings.media_backup_enabled,
+        rate_limit_backend=settings.rate_limit_backend,
+    )

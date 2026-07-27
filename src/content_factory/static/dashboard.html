@@ -7,21 +7,22 @@
 <style>
   :root {
     --bg: #0f1115; --panel: #1a1d24; --border: #2a2e38; --text: #e8e8ec;
-    --muted: #9aa0ac; --accent: #4f7cff; --ok: #2ecc71; --err: #e74c3c;
+    --muted: #9aa0ac; --accent: #4f7cff; --ok: #2ecc71; --err: #e74c3c; --warn: #f1c40f;
   }
   * { box-sizing: border-box; }
+  html, body { height: 100%; }
   body {
     background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, "Segoe UI", Tahoma, sans-serif;
-    margin: 0; padding: 16px; line-height: 1.5;
+    margin: 0; line-height: 1.5;
   }
-  h1 { font-size: 20px; margin: 0 0 4px; }
+  a { color: inherit; }
+  h1 { font-size: 18px; margin: 0; }
   h2 { font-size: 16px; margin: 0 0 10px; color: var(--accent); }
-  .sub { color: var(--muted); font-size: 13px; margin-bottom: 18px; }
+  .sub { color: var(--muted); font-size: 13px; }
   .card {
     background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
     padding: 16px; margin-bottom: 14px;
   }
-  .card.disabled { opacity: 0.45; pointer-events: none; }
   label { display: block; font-size: 13px; color: var(--muted); margin: 8px 0 4px; }
   input, textarea, select {
     width: 100%; background: #0d0f13; border: 1px solid var(--border); color: var(--text);
@@ -30,387 +31,844 @@
   textarea { min-height: 70px; resize: vertical; }
   button {
     background: var(--accent); color: #fff; border: none; border-radius: 6px;
-    padding: 10px 14px; font-size: 14px; cursor: pointer; margin-top: 10px; margin-inline-end: 8px;
+    padding: 9px 14px; font-size: 13px; cursor: pointer; margin-top: 10px; margin-inline-end: 8px;
   }
   button.secondary { background: #333844; }
-  button:active { transform: scale(0.98); }
+  button.danger { background: #7a2a2a; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  button:active:not(:disabled) { transform: scale(0.98); }
   table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; }
   th, td { text-align: right; padding: 6px 8px; border-bottom: 1px solid var(--border); }
   tr.row-selectable { cursor: pointer; }
   tr.row-selectable:hover { background: #232733; }
-  tr.row-selected { background: #202b45; }
-  .pill { display: inline-block; padding: 2px 8px; border-radius: 20px; font-size: 11px; }
+  .pill { display: inline-block; padding: 2px 9px; border-radius: 20px; font-size: 11px; white-space: nowrap; }
   .pill.ok { background: rgba(46,204,113,.15); color: var(--ok); }
+  .pill.err { background: rgba(231,76,60,.15); color: var(--err); }
+  .pill.warn { background: rgba(241,196,15,.15); color: var(--warn); }
   .pill.muted { background: rgba(154,160,172,.15); color: var(--muted); }
+  .pill-row { display: flex; flex-wrap: wrap; gap: 6px; }
   .status-line { font-size: 13px; margin-top: 8px; white-space: pre-wrap; word-break: break-word; }
   .status-line.ok { color: var(--ok); }
   .status-line.err { color: var(--err); }
   .current { font-size: 12px; color: var(--muted); margin-bottom: 10px; }
   .current b { color: var(--text); }
-  #log { max-height: 220px; overflow-y: auto; font-family: ui-monospace, monospace; font-size: 12px; white-space: pre-wrap; color: var(--muted); }
-  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-  .top { display: flex; justify-content: space-between; align-items: center; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 760px) { .grid2 { grid-template-columns: 1fr; } }
+
+  .topbar {
+    display: flex; align-items: center; gap: 12px; padding: 10px 16px;
+    background: var(--panel); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 5;
+  }
+  .topbar .spacer { flex: 1; }
+  .navtabs { display: flex; flex-wrap: wrap; gap: 4px; padding: 8px 16px; background: #14161c; border-bottom: 1px solid var(--border); }
+  .navtabs a.tab {
+    text-decoration: none; color: var(--muted); font-size: 13px; padding: 7px 12px; border-radius: 6px;
+  }
+  .navtabs a.tab:hover { background: #1f2330; color: var(--text); }
+  .navtabs a.tab.active { background: var(--accent); color: #fff; }
+  main.page { padding: 16px; max-width: 1100px; margin: 0 auto; }
+
+  .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 14px; }
+  .stat-card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px; }
+  .stat-label { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+  .stat-value { font-size: 24px; font-weight: 600; }
+  .stat-value.ok { color: var(--ok); }
+  .stat-value.err { color: var(--err); }
+  .stat-sub { font-size: 11px; color: var(--muted); margin-top: 4px; }
+
+  .pipeline-row { display: flex; gap: 6px; overflow-x: auto; padding: 6px 0 14px; }
+  .stage {
+    flex: 1; min-width: 120px; background: #12141a; border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px; text-align: center; position: relative;
+  }
+  .stage.stage-done { border-color: var(--ok); }
+  .stage.stage-progress { border-color: var(--accent); }
+  .stage.stage-error { border-color: var(--err); }
+  .stage-name { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  .stage-label { font-size: 13px; font-weight: 600; }
+  .stage-arrow { align-self: center; color: var(--muted); font-size: 16px; padding: 0 2px; }
+  .kv-grid { display: grid; grid-template-columns: 200px 1fr; gap: 6px 12px; font-size: 13px; }
+  .kv-grid .k { color: var(--muted); }
+  #log { max-height: 180px; overflow-y: auto; font-family: ui-monospace, monospace; font-size: 12px; white-space: pre-wrap; color: var(--muted); }
 </style>
 </head>
 <body>
 
-<div class="top">
-  <div>
-    <h1>لوحة تحكم AI Content Factory</h1>
-    <div class="sub">واجهة بسيطة فوق نفس الـ API — لا تحتاج JSON ولا Swagger</div>
-  </div>
-  <div id="loginBadge" class="pill muted">غير مسجّل دخول</div>
+<div class="topbar">
+  <h1>AI Content Factory</h1>
+  <div id="healthPill" class="pill muted">...</div>
+  <div class="spacer"></div>
+  <div id="userBadge" class="pill muted">غير مسجّل دخول</div>
+  <button class="secondary" id="logoutBtn" onclick="logout()" style="display:none;margin:0">تسجيل خروج</button>
 </div>
-
-<!-- 1. Login -->
-<div class="card" id="loginCard">
-  <h2>1. تسجيل الدخول</h2>
-  <div class="grid2">
-    <div>
-      <label>Client ID</label>
-      <input id="clientId" value="pilot-operator">
-    </div>
-    <div>
-      <label>Client Secret</label>
-      <input id="clientSecret" type="password" placeholder="الصق القيمة السرية هنا">
-    </div>
-  </div>
-  <button onclick="login()">تسجيل الدخول</button>
-  <div id="loginStatus" class="status-line"></div>
-</div>
-
-<!-- 2. Campaigns -->
-<div class="card disabled" id="campaignsCard">
-  <h2>2. الحملات (Campaigns)</h2>
-  <div class="grid2">
-    <div>
-      <label>اسم البراند / الحملة</label>
-      <input id="brandName" placeholder="مثال: MyBrand">
-    </div>
-    <div>
-      <label>النيتش / المجال (اختياري)</label>
-      <input id="nicheName" placeholder="مثال: fitness">
-    </div>
-  </div>
-  <label>نص القواعد / الشروط (اختياري)</label>
-  <textarea id="rulesText" placeholder="شروط الحملة إن وجدت"></textarea>
-  <button onclick="createCampaign()">إنشاء حملة</button>
-  <button class="secondary" onclick="listCampaigns()">تحديث القائمة</button>
-  <div id="campaignsStatus" class="status-line"></div>
-  <table id="campaignsTable"><thead><tr><th>ID</th><th>الاسم</th><th>الحالة</th></tr></thead><tbody></tbody></table>
-</div>
-
-<!-- 3. Pipeline -->
-<div class="card disabled" id="pipelineCard">
-  <h2>3. خط الإنتاج (لحملة واحدة محددة)</h2>
-  <div class="current">الحملة المحددة حاليًا: <b id="curCampaign">لا يوجد</b> — اضغط على صف من الجدول أعلاه لاختيارها</div>
-
-  <h2 style="margin-top:18px">أ. البحث (Research)</h2>
-  <textarea id="rawNotes" placeholder="ملاحظات عن المنافسين/الفكرة (اختياري)"></textarea>
-  <button onclick="runResearch()">تشغيل البحث بالذكاء الاصطناعي</button>
-  <div id="researchStatus" class="status-line"></div>
-
-  <h2 style="margin-top:18px">ب. الأفكار (Ideas)</h2>
-  <textarea id="conceptSummary" placeholder="وصف مختصر لفكرة المحتوى"></textarea>
-  <button onclick="createIdea()">إضافة فكرة</button>
-  <button class="secondary" onclick="listIdeas()">عرض الأفكار</button>
-  <div id="ideasStatus" class="status-line"></div>
-  <table id="ideasTable"><thead><tr><th>ID</th><th>الفكرة</th><th>الحالة</th></tr></thead><tbody></tbody></table>
-  <div class="current">الفكرة المحددة: <b id="curIdea">لا يوجد</b></div>
-
-  <h2 style="margin-top:18px">ج. السكريبتات (Scripts)</h2>
-  <label>عدد النسخ</label>
-  <input id="numVariants" type="number" value="2" min="1" max="10">
-  <button onclick="generateScripts()">توليد سكريبتات</button>
-  <div id="scriptsStatus" class="status-line"></div>
-  <table id="scriptsTable"><thead><tr><th>ID</th><th>الحالة</th></tr></thead><tbody></tbody></table>
-  <div class="current">السكريبت المحدد: <b id="curScript">لا يوجد</b></div>
-
-  <h2 style="margin-top:18px">د. إنتاج الفيديو (Render)</h2>
-  <button onclick="renderVideo()">إنتاج الفيديو</button>
-  <div id="renderStatus" class="status-line"></div>
-  <div class="current">الفيديو الناتج: <b id="curVideo">لا يوجد</b> — أكمل المراجعة والنشر في البطاقة أدناه</div>
-</div>
-
-<!-- Clip factory: long-form video -> AI-selected real short clips -->
-<div class="card disabled" id="clipFactoryCard">
-  <h2>المونتاج التلقائي (فيديو طويل → مقاطع قصيرة)</h2>
-  <div class="sub">ارفع فيديو طويل (بودكاست، بث، مقابلة...)، والذكاء الاصطناعي يفهمه ويختار أفضل اللقطات ويقصّها فعليًا مع ترجمة وهوك.</div>
-
-  <label>عنوان الفيديو</label>
-  <input id="sourceVideoTitle" placeholder="مثال: حلقة بودكاست 12">
-  <label>ملف الفيديو</label>
-  <input id="sourceVideoFile" type="file" accept="video/*">
-  <button onclick="uploadSourceVideo()">رفع الفيديو</button>
-  <button class="secondary" onclick="listSourceVideos()">تحديث القائمة</button>
-  <div id="sourceVideoStatus" class="status-line"></div>
-  <table id="sourceVideosTable"><thead><tr><th>ID</th><th>العنوان</th><th>حالة التفريغ النصي</th></tr></thead><tbody></tbody></table>
-  <div class="current">الفيديو المحدد: <b id="curSourceVideo">لا يوجد</b> — اضغط على صف لاختياره</div>
-
-  <button onclick="transcribeSourceVideo()">1. تفريغ الصوت نصيًا (Transcribe)</button>
-  <button onclick="analyzeSourceVideo()">2. تحليل واختيار أفضل اللقطات (AI)</button>
-  <div id="analyzeStatus" class="status-line"></div>
-
-  <table id="clipsTable"><thead><tr><th>ID</th><th>البداية</th><th>النهاية</th><th>الهوك</th><th>التقييم المتوقع</th></tr></thead><tbody></tbody></table>
-  <div class="current">المقطع المحدد: <b id="curClip">لا يوجد</b></div>
-  <button onclick="renderClip()">3. قصّ المقطع فعليًا وإضافة الترجمة</button>
-  <div id="clipRenderStatus" class="status-line"></div>
-</div>
-
-<!-- Shared review/publish - works for a video from either the script pipeline or the clip factory -->
-<div class="card disabled" id="reviewPublishCard">
-  <h2>مراجعة ونشر الفيديو</h2>
-  <div class="current">الفيديو الحالي: <b id="curVideoShared">لا يوجد</b></div>
-
-  <h2 style="margin-top:18px">المراجعة البشرية (مطلوبة قبل النشر)</h2>
-  <div class="grid2">
-    <div>
-      <label>القرار</label>
-      <select id="reviewDecision">
-        <option value="approved">موافقة (approved)</option>
-        <option value="rejected">رفض (rejected)</option>
-        <option value="revision_requested">طلب تعديل (revision_requested)</option>
-      </select>
-    </div>
-    <div>
-      <label>سبب الرفض/التعديل (reason_code، إن وجد)</label>
-      <input id="reasonCode" placeholder="مثال: policy_risk">
-    </div>
-  </div>
-  <label>ملاحظات</label>
-  <textarea id="reviewNotes"></textarea>
-  <button onclick="submitReview()">إرسال قرار المراجعة</button>
-  <div id="reviewStatus" class="status-line"></div>
-
-  <h2 style="margin-top:18px">النشر (Publish)</h2>
-  <div class="grid2">
-    <div>
-      <label>Account ID (من /accounts)</label>
-      <input id="publishAccountId" type="number" placeholder="مثال: 1">
-    </div>
-    <div>
-      <label>عنوان الفيديو</label>
-      <input id="publishTitle" placeholder="عنوان المنشور">
-    </div>
-  </div>
-  <textarea id="publishDescription" placeholder="وصف المنشور (اختياري)"></textarea>
-  <button onclick="publishVideo()">نشر</button>
-  <div id="publishStatus" class="status-line"></div>
-</div>
-
-<!-- 4. Budget & summary -->
-<div class="card disabled" id="budgetCard">
-  <h2>4. الميزانية والملخص العام</h2>
-  <div class="grid2">
-    <div>
-      <label>سقف الميزانية الشهري (USD) — نطاق عام</label>
-      <input id="budgetAmount" type="number" placeholder="مثال: 20">
-    </div>
-    <div style="align-self:end">
-      <button onclick="setBudget()">تعيين السقف</button>
-    </div>
-  </div>
-  <div id="budgetStatus" class="status-line"></div>
-  <button class="secondary" onclick="loadSummary()">تحديث الملخص العام</button>
-  <div id="summaryBox" class="status-line"></div>
-</div>
-
-<div class="card">
-  <h2>سجل العمليات (للمطور/الدعم الفني)</h2>
-  <div id="log"></div>
-</div>
+<nav class="navtabs" id="navtabs" style="display:none"></nav>
+<main id="view" class="page"></main>
 
 <script>
-let token = null;
-let state = { campaignId: null, ideaId: null, scriptId: null, videoId: null, sourceVideoId: null, clipId: null };
+const AUTH_KEY = 'cf_auth';
+const STATE_KEY = 'cf_pipeline_state';
 
-function log(msg) {
+function getAuth() { try { return JSON.parse(localStorage.getItem(AUTH_KEY) || 'null'); } catch (e) { return null; } }
+function setAuth(a) { localStorage.setItem(AUTH_KEY, JSON.stringify(a)); }
+function clearAuth() { localStorage.removeItem(AUTH_KEY); }
+function isAuthed() { const a = getAuth(); return !!(a && a.token && a.expiresAt > Date.now()); }
+function getToken() { const a = getAuth(); return a ? a.token : null; }
+
+function getState() { try { return JSON.parse(localStorage.getItem(STATE_KEY) || '{}'); } catch (e) { return {}; } }
+function setState(patch) { const s = Object.assign(getState(), patch); localStorage.setItem(STATE_KEY, JSON.stringify(s)); return s; }
+
+function escapeHtml(s) {
+  return String(s === null || s === undefined ? '' : s).replace(/[&<>"']/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+  });
+}
+
+function logLine(msg) {
   const el = document.getElementById('log');
+  if (!el) return;
   const time = new Date().toLocaleTimeString('en-GB');
   el.textContent = `[${time}] ${msg}\n` + el.textContent;
 }
 
 function setStatus(elId, text, ok) {
   const el = document.getElementById(elId);
+  if (!el) return;
   el.textContent = text;
   el.className = 'status-line ' + (ok === true ? 'ok' : ok === false ? 'err' : '');
 }
 
-async function api(path, options = {}) {
+async function api(path, options) {
+  options = options || {};
   const headers = options.headers || {};
   const isFormData = options.body instanceof FormData;
-  if (!isFormData) headers['Content-Type'] = 'application/json';
+  if (!isFormData && options.body) headers['Content-Type'] = 'application/json';
+  const token = getToken();
   if (token) headers['Authorization'] = 'Bearer ' + token;
-  const res = await fetch(path, { ...options, headers });
+  const res = await fetch(path, Object.assign({}, options, { headers }));
+  if (res.status === 401) {
+    clearAuth();
+    location.hash = '#/login';
+    router();
+    throw new Error('انتهت الجلسة — الرجاء تسجيل الدخول مجددًا');
+  }
   let body;
   try { body = await res.json(); } catch (e) { body = null; }
-  log(`${options.method || 'GET'} ${path} -> ${res.status}\n${JSON.stringify(body)}`);
+  logLine(`${options.method || 'GET'} ${path} -> ${res.status}`);
   if (!res.ok) {
-    const detail = body && body.detail ? JSON.stringify(body.detail) : res.status;
+    const detail = body && body.detail ? (typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail)) : res.status;
     throw new Error(detail);
   }
   return body;
 }
 
-function unlock(cardId) {
-  document.getElementById(cardId).classList.remove('disabled');
+/* ---------- Login ---------- */
+
+function renderLogin(view) {
+  view.innerHTML = `
+    <div class="card" style="max-width:420px;margin:60px auto">
+      <h2>تسجيل الدخول</h2>
+      <label>Client ID</label>
+      <input id="clientId" value="pilot-operator">
+      <label>Client Secret</label>
+      <input id="clientSecret" type="password" placeholder="الصق القيمة السرية هنا">
+      <button onclick="doLogin()">دخول</button>
+      <div id="loginStatus" class="status-line"></div>
+    </div>`;
 }
 
-async function login() {
+async function doLogin() {
   const client_id = document.getElementById('clientId').value.trim();
   const client_secret = document.getElementById('clientSecret').value;
   try {
-    const data = await api('/auth/token', { method: 'POST', body: JSON.stringify({ client_id, client_secret }) });
-    token = data.access_token;
-    setStatus('loginStatus', 'تم تسجيل الدخول بنجاح — صلاحية التوكن ' + Math.round(data.expires_in / 60) + ' دقيقة', true);
-    document.getElementById('loginBadge').textContent = 'مسجّل دخول (' + client_id + ')';
-    document.getElementById('loginBadge').className = 'pill ok';
-    unlock('campaignsCard');
-    unlock('budgetCard');
-    unlock('clipFactoryCard');
-    await listCampaigns();
-    await loadSummary();
-    await listSourceVideos();
+    const res = await fetch('/auth/token', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client_id, client_secret }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || res.status);
+    setAuth({ token: data.access_token, expiresAt: Date.now() + data.expires_in * 1000, clientId: client_id });
+    location.hash = '#/dashboard';
+    router();
   } catch (e) {
     setStatus('loginStatus', 'فشل تسجيل الدخول: ' + e.message, false);
   }
 }
 
+function logout() { clearAuth(); location.hash = '#/login'; router(); }
+
+function updateUserBadge() {
+  const badge = document.getElementById('userBadge');
+  const btn = document.getElementById('logoutBtn');
+  const a = getAuth();
+  if (a && isAuthed()) {
+    badge.textContent = 'مسجّل دخول (' + a.clientId + ')';
+    badge.className = 'pill ok';
+    btn.style.display = 'inline-block';
+  } else {
+    badge.textContent = 'غير مسجّل دخول';
+    badge.className = 'pill muted';
+    btn.style.display = 'none';
+  }
+}
+
+async function checkHealth() {
+  const pill = document.getElementById('healthPill');
+  try {
+    const res = await fetch('/health');
+    const data = await res.json();
+    pill.textContent = data.status === 'ok' ? 'الخدمة تعمل' : 'الخدمة متعطلة';
+    pill.className = 'pill ' + (data.status === 'ok' ? 'ok' : 'err');
+  } catch (e) {
+    pill.textContent = 'تعذر الوصول للخدمة';
+    pill.className = 'pill err';
+  }
+}
+
+/* ---------- Router ---------- */
+
+const NAV_ITEMS = [
+  ['#/dashboard', 'الرئيسية'],
+  ['#/campaigns', 'الحملات'],
+  ['#/pipeline', 'خط الإنتاج'],
+  ['#/ideas', 'الأفكار'],
+  ['#/scripts', 'السكريبتات'],
+  ['#/videos', 'المراجعة والنشر'],
+  ['#/clips', 'المونتاج التلقائي'],
+  ['#/settings', 'الإعدادات'],
+];
+const ROUTES = {
+  '#/login': renderLogin,
+  '#/dashboard': renderDashboard,
+  '#/campaigns': renderCampaigns,
+  '#/pipeline': renderPipeline,
+  '#/ideas': renderIdeas,
+  '#/scripts': renderScripts,
+  '#/videos': renderVideos,
+  '#/clips': renderClips,
+  '#/settings': renderSettings,
+};
+
+function renderNav(current) {
+  const nav = document.getElementById('navtabs');
+  nav.innerHTML = NAV_ITEMS.map(([href, label]) =>
+    `<a class="tab${current === href ? ' active' : ''}" href="${href}">${label}</a>`
+  ).join('');
+}
+
+async function router() {
+  const hash = location.hash || '#/dashboard';
+  const authed = isAuthed();
+  document.getElementById('navtabs').style.display = authed ? 'flex' : 'none';
+  updateUserBadge();
+  if (!authed && hash !== '#/login') { location.hash = '#/login'; return; }
+  if (authed && hash === '#/login') { location.hash = '#/dashboard'; return; }
+  renderNav(hash);
+  const view = document.getElementById('view');
+  const fn = ROUTES[hash] || renderDashboard;
+  try {
+    await fn(view);
+  } catch (e) {
+    view.innerHTML = `<div class="card"><div class="status-line err">خطأ: ${escapeHtml(e.message)}</div></div>`;
+  }
+  checkHealth();
+}
+window.addEventListener('hashchange', router);
+window.addEventListener('DOMContentLoaded', router);
+
+function goToPipeline(id) {
+  setState({ campaignId: id, ideaId: null, scriptId: null, videoId: null });
+  location.hash = '#/pipeline';
+}
+
+/* ---------- Dashboard ---------- */
+
+async function renderDashboard(view) {
+  view.innerHTML = `<div id="dashRoot" class="sub">جارٍ التحميل...</div>`;
+  const root = document.getElementById('dashRoot');
+  try {
+    const health = await fetch('/health').then(r => r.json()).catch(() => ({ status: 'unknown', checks: {} }));
+    const [summary, campaigns, videos] = await Promise.all([
+      api('/dashboard/summary'),
+      api('/campaigns?limit=5'),
+      api('/videos?limit=5'),
+    ]);
+    const statuses = Object.entries(summary.video_counts_by_status || {});
+    root.innerHTML = `
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-label">حالة النظام (/health)</div>
+          <div class="stat-value ${health.status === 'ok' ? 'ok' : 'err'}">${escapeHtml(health.status)}</div>
+          <div class="stat-sub">DB: ${escapeHtml(health.checks.database || '-')}${health.checks.redis ? ' · Redis: ' + escapeHtml(health.checks.redis) : ''}</div>
+        </div>
+        <div class="stat-card"><div class="stat-label">عدد الحملات</div><div class="stat-value">${summary.campaign_count}</div></div>
+        <div class="stat-card"><div class="stat-label">بانتظار المراجعة</div><div class="stat-value">${summary.pending_review_count}</div></div>
+        <div class="stat-card"><div class="stat-label">الربح التقديري</div><div class="stat-value">$${summary.profit_usd.toFixed(2)}</div></div>
+      </div>
+      <div class="card">
+        <h2>حالة خط الإنتاج الحالية (حسب حالة الفيديو)</h2>
+        <div class="pill-row">${statuses.length ? statuses.map(([k, v]) => `<span class="pill muted">${escapeHtml(k)}: ${v}</span>`).join('') : '<span class="sub">لا توجد فيديوهات بعد</span>'}</div>
+      </div>
+      <div class="grid2">
+        <div class="card">
+          <h2>أحدث الحملات (نشاط حديث)</h2>
+          ${campaigns.length ? renderCampaignRows(campaigns) : '<div class="sub">لا توجد حملات بعد — ابدأ من صفحة الحملات</div>'}
+        </div>
+        <div class="card">
+          <h2>أحدث الفيديوهات (نشاط حديث)</h2>
+          ${videos.length ? renderVideoRowsCompact(videos) : '<div class="sub">لا توجد فيديوهات بعد</div>'}
+        </div>
+      </div>`;
+    document.querySelectorAll('#dashRoot [data-goto-campaign]').forEach(tr => {
+      tr.onclick = () => goToPipeline(parseInt(tr.dataset.gotoCampaign, 10));
+    });
+  } catch (e) {
+    root.innerHTML = `<div class="status-line err">تعذر تحميل لوحة التحكم: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function renderCampaignRows(list) {
+  return `<table><thead><tr><th>ID</th><th>الاسم</th><th>الحالة</th></tr></thead><tbody>${
+    list.map(c => `<tr class="row-selectable" data-goto-campaign="${c.id}"><td>${c.id}</td><td>${escapeHtml(c.brand_name)}</td><td>${escapeHtml(c.status)}</td></tr>`).join('')
+  }</tbody></table>`;
+}
+
+function renderVideoRowsCompact(list) {
+  return `<table><thead><tr><th>ID</th><th>الحالة</th><th>الإنتاج</th></tr></thead><tbody>${
+    list.map(v => `<tr><td>${v.id}</td><td>${escapeHtml(v.status)}</td><td>${escapeHtml(v.render_status)}</td></tr>`).join('')
+  }</tbody></table>`;
+}
+
+/* ---------- Campaigns ---------- */
+
+async function renderCampaigns(view) {
+  view.innerHTML = `
+    <div class="card">
+      <h2>إنشاء حملة جديدة</h2>
+      <div class="grid2">
+        <div><label>اسم البراند / الحملة</label><input id="brandName" placeholder="مثال: Acme"></div>
+        <div><label>النيتش (اختياري)</label><input id="nicheName" placeholder="مثال: fitness"></div>
+      </div>
+      <label>CPM (اختياري)</label>
+      <input id="cpmRate" type="number" step="0.1" placeholder="مثال: 4.0">
+      <button onclick="createCampaign()">إنشاء</button>
+      <div id="createCampaignStatus" class="status-line"></div>
+    </div>
+    <div class="card">
+      <h2>الحملات</h2>
+      <button class="secondary" onclick="listCampaigns()">تحديث</button>
+      <div id="campaignsStatus" class="status-line"></div>
+      <table id="campaignsTable"><thead><tr><th>ID</th><th>الاسم</th><th>النيتش</th><th>الحالة</th><th></th></tr></thead><tbody></tbody></table>
+    </div>
+    <div class="card" id="campaignDetailCard" style="display:none">
+      <h2>تفاصيل الحملة</h2>
+      <div id="campaignDetailBody" class="kv-grid"></div>
+      <button onclick="goToPipelineFromDetail()">الذهاب لخط الإنتاج</button>
+    </div>`;
+  await listCampaigns();
+}
+
+let _campaignsCache = [];
+let _detailCampaignId = null;
+
 async function createCampaign() {
   const brand_name = document.getElementById('brandName').value.trim();
   const niche_name = document.getElementById('nicheName').value.trim() || null;
-  const rules_text = document.getElementById('rulesText').value.trim() || null;
-  if (!brand_name) { setStatus('campaignsStatus', 'اسم الحملة مطلوب', false); return; }
+  const cpmVal = document.getElementById('cpmRate').value;
+  const cpm_rate = cpmVal ? parseFloat(cpmVal) : null;
+  if (!brand_name) { setStatus('createCampaignStatus', 'اسم الحملة مطلوب', false); return; }
   try {
-    const data = await api('/campaigns', { method: 'POST', body: JSON.stringify({ brand_name, niche_name, rules_text }) });
-    setStatus('campaignsStatus', 'تم إنشاء الحملة رقم ' + data.id, true);
+    const data = await api('/campaigns', { method: 'POST', body: JSON.stringify({ brand_name, niche_name, cpm_rate }) });
+    setStatus('createCampaignStatus', 'تم إنشاء الحملة رقم ' + data.id, true);
     await listCampaigns();
-    selectCampaign(data.id, data.brand_name);
   } catch (e) {
-    setStatus('campaignsStatus', 'خطأ: ' + e.message, false);
+    setStatus('createCampaignStatus', 'خطأ: ' + e.message, false);
   }
 }
 
 async function listCampaigns() {
   try {
-    const data = await api('/campaigns?limit=50');
+    const data = await api('/campaigns?limit=100');
+    _campaignsCache = data;
     const tbody = document.querySelector('#campaignsTable tbody');
-    tbody.innerHTML = '';
-    data.forEach(c => {
-      const tr = document.createElement('tr');
-      tr.className = 'row-selectable';
-      tr.innerHTML = `<td>${c.id}</td><td>${c.brand_name}</td><td>${c.status}</td>`;
-      tr.onclick = () => selectCampaign(c.id, c.brand_name);
-      tbody.appendChild(tr);
+    tbody.innerHTML = data.map((c, i) =>
+      `<tr><td>${c.id}</td><td>${escapeHtml(c.brand_name)}</td><td>${escapeHtml(c.niche_id ?? '-')}</td><td>${escapeHtml(c.status)}</td>` +
+      `<td><button class="secondary" data-detail-idx="${i}" style="margin:0">تفاصيل</button> <button data-pipeline-idx="${i}" style="margin:0">خط الإنتاج</button></td></tr>`
+    ).join('');
+    tbody.querySelectorAll('[data-detail-idx]').forEach(btn => {
+      btn.onclick = () => showCampaignDetail(_campaignsCache[parseInt(btn.dataset.detailIdx, 10)]);
+    });
+    tbody.querySelectorAll('[data-pipeline-idx]').forEach(btn => {
+      btn.onclick = () => goToPipeline(_campaignsCache[parseInt(btn.dataset.pipelineIdx, 10)].id);
     });
   } catch (e) {
     setStatus('campaignsStatus', 'تعذر تحميل القائمة: ' + e.message, false);
   }
 }
 
-function selectCampaign(id, name) {
-  state.campaignId = id;
-  document.getElementById('curCampaign').textContent = `#${id} (${name})`;
-  unlock('pipelineCard');
-  document.querySelectorAll('#campaignsTable tr').forEach(r => r.classList.remove('row-selected'));
+function showCampaignDetail(c) {
+  _detailCampaignId = c.id;
+  document.getElementById('campaignDetailCard').style.display = 'block';
+  document.getElementById('campaignDetailBody').innerHTML = `
+    <div class="k">ID</div><div>${c.id}</div>
+    <div class="k">الاسم</div><div>${escapeHtml(c.brand_name)}</div>
+    <div class="k">الحالة</div><div>${escapeHtml(c.status)}</div>
+    <div class="k">CPM</div><div>${c.cpm_rate ?? '-'}</div>
+    <div class="k">سقف الميزانية</div><div>${c.budget_cap ?? '-'}</div>
+    <div class="k">يسمح بمحتوى AI</div><div>${c.ai_content_allowed ? 'نعم' : 'لا'}</div>
+    <div class="k">تاريخ الإنشاء</div><div>${escapeHtml(c.created_at)}</div>
+    <div class="k">آخر تقييم</div><div>${c.latest_score ? escapeHtml(c.latest_score.recommendation || '-') : '-'}</div>`;
 }
 
-async function runResearch() {
-  if (!state.campaignId) return;
+function goToPipelineFromDetail() { if (_detailCampaignId) goToPipeline(_detailCampaignId); }
+
+/* ---------- Campaign Pipeline (visual workflow) ---------- */
+
+function campaignPicker() {
+  return `<div class="card">
+    <h2>اختر حملة</h2>
+    <div class="sub">لا توجد حملة محددة حاليًا.</div>
+    <table><thead><tr><th>ID</th><th>الاسم</th><th></th></tr></thead><tbody id="pickerBody"></tbody></table>
+  </div>`;
+}
+
+async function renderPipeline(view) {
+  const st = getState();
+  if (!st.campaignId) {
+    view.innerHTML = campaignPicker();
+    try {
+      const list = await api('/campaigns?limit=50');
+      const tbody = document.getElementById('pickerBody');
+      tbody.innerHTML = list.map((c, i) => `<tr><td>${c.id}</td><td>${escapeHtml(c.brand_name)}</td><td><button data-pick-idx="${i}" style="margin:0">اختيار</button></td></tr>`).join('');
+      tbody.querySelectorAll('[data-pick-idx]').forEach(btn => {
+        btn.onclick = () => goToPipeline(list[parseInt(btn.dataset.pickIdx, 10)].id);
+      });
+    } catch (e) { /* picker best-effort */ }
+    return;
+  }
+
+  view.innerHTML = `<div class="card"><div class="sub">جارٍ تحميل حالة خط الإنتاج...</div></div>`;
+  try {
+    const campaign = await api(`/campaigns/${st.campaignId}`);
+    const briefs = await api(`/campaigns/${st.campaignId}/research?limit=10`);
+    const ideas = await api(`/campaigns/${st.campaignId}/ideas?limit=100`);
+    const selectedIdeas = ideas.filter(i => i.status === 'selected');
+    let scripts = [];
+    for (const idea of selectedIdeas) {
+      const s = await api(`/ideas/${idea.id}/scripts?limit=50`).catch(() => []);
+      scripts = scripts.concat(s);
+    }
+    const scriptIds = new Set(scripts.map(s => s.id));
+    const allVideos = await api('/videos?limit=200').catch(() => []);
+    const videos = allVideos.filter(v => v.script_id && scriptIds.has(v.script_id));
+    const publications = await api('/publications?limit=200').catch(() => []);
+    const pubs = publications.filter(p => p.campaign_id === st.campaignId);
+
+    const researchStage = briefs.some(b => b.status === 'completed') ? 'done'
+      : briefs.length ? 'progress' : 'pending';
+    const ideasStage = ideas.length === 0 ? 'pending' : (selectedIdeas.length ? 'done' : 'progress');
+    const scriptStage = scripts.length === 0 ? (selectedIdeas.length ? 'pending' : 'pending') : 'done';
+    const renderedVideos = videos.filter(v => v.render_status === 'completed');
+    const renderStage = videos.length === 0 ? 'pending' : (renderedVideos.length ? 'done' : 'progress');
+    const approvedVideos = videos.filter(v => v.status === 'approved' || v.status === 'published');
+    const reviewStage = videos.length === 0 ? 'pending' : (approvedVideos.length ? 'done' : (videos.some(v => v.status === 'pending_review') ? 'progress' : 'pending'));
+    const publishedPubs = pubs.filter(p => p.status === 'published');
+    const publishStage = pubs.length === 0 ? 'pending' : (publishedPubs.length ? 'done' : 'progress');
+
+    const stages = [
+      { name: 'الحملة', cls: 'done', label: campaign.status },
+      { name: 'البحث', cls: researchStage, label: briefs.length ? `${briefs.length} تقرير` : 'لم يبدأ' },
+      { name: 'الأفكار', cls: ideasStage, label: ideas.length ? `${ideas.length} فكرة (${selectedIdeas.length} مختارة)` : 'لا يوجد' },
+      { name: 'السكريبت', cls: scriptStage, label: scripts.length ? `${scripts.length} سكريبت` : 'لا يوجد' },
+      { name: 'الإنتاج', cls: renderStage, label: videos.length ? `${renderedVideos.length}/${videos.length} مكتمل` : 'لا يوجد' },
+      { name: 'المراجعة', cls: reviewStage, label: videos.length ? `${approvedVideos.length} معتمد` : 'لا يوجد' },
+      { name: 'النشر', cls: publishStage, label: pubs.length ? `${publishedPubs.length}/${pubs.length} منشور فعليًا` : 'لا يوجد' },
+    ];
+    const stageClass = { done: 'stage-done', progress: 'stage-progress', pending: '', error: 'stage-error' };
+
+    view.innerHTML = `
+      <div class="current">الحملة الحالية: <b>#${campaign.id} (${escapeHtml(campaign.brand_name)})</b> — <a href="#/campaigns">تغيير</a></div>
+      <div class="card">
+        <h2>خط الإنتاج المرئي</h2>
+        <div class="pipeline-row">
+          ${stages.map((s, i) => `<div class="stage ${stageClass[s.cls]}"><div class="stage-name">${s.name}</div><div class="stage-label">${escapeHtml(s.label)}</div></div>${i < stages.length - 1 ? '<div class="stage-arrow">←</div>' : ''}`).join('')}
+        </div>
+        <div class="sub">الأخضر = مكتمل، الأزرق = قيد التنفيذ، الرمادي = لم يبدأ بعد.</div>
+      </div>
+
+      <div class="card">
+        <h2>البحث (Research)</h2>
+        <textarea id="rawNotes" placeholder="ملاحظات عن المنافسين (اختياري)"></textarea>
+        <button onclick="runResearch(${campaign.id})">تشغيل البحث بالذكاء الاصطناعي</button>
+        <button class="secondary" onclick="location.hash='#/pipeline'">تحديث الحالة</button>
+        <div id="researchStatus" class="status-line"></div>
+      </div>
+      <div class="card">
+        <div class="sub">تابع الأفكار والسكريبتات والفيديوهات من صفحاتها المخصصة عبر القائمة العلوية — تم تحديد هذه الحملة كسياق حالي لتلك الصفحات.</div>
+        <button class="secondary" onclick="location.hash='#/ideas'">الذهاب لصفحة الأفكار</button>
+      </div>`;
+  } catch (e) {
+    view.innerHTML = `<div class="card"><div class="status-line err">تعذر تحميل خط الإنتاج: ${escapeHtml(e.message)}</div></div>`;
+  }
+}
+
+async function runResearch(campaignId) {
   const raw_notes = document.getElementById('rawNotes').value;
   try {
     setStatus('researchStatus', 'جارٍ التنفيذ عبر الذكاء الاصطناعي...', null);
-    const data = await api(`/campaigns/${state.campaignId}/research`, { method: 'POST', body: JSON.stringify({ raw_notes }) });
-    setStatus('researchStatus', 'النتيجة:\n' + (data.brief_text || '(فارغ)'), true);
+    const data = await api(`/campaigns/${campaignId}/research`, { method: 'POST', body: JSON.stringify({ raw_notes }) });
+    setStatus('researchStatus', `الحالة: ${data.status}\n` + (data.brief_text || '(لا يوجد نص — قد يكون مزوّد الذكاء الاصطناعي غير مهيأ)'), true);
   } catch (e) {
     setStatus('researchStatus', 'خطأ: ' + e.message, false);
   }
 }
 
-async function createIdea() {
-  if (!state.campaignId) return;
-  const concept_summary = document.getElementById('conceptSummary').value.trim();
-  if (!concept_summary) { setStatus('ideasStatus', 'وصف الفكرة مطلوب', false); return; }
-  try {
-    const data = await api(`/campaigns/${state.campaignId}/ideas`, { method: 'POST', body: JSON.stringify({ concept_summary }) });
-    setStatus('ideasStatus', 'تم إنشاء الفكرة رقم ' + data.id, true);
-    await listIdeas();
-    selectIdea(data.id, data.concept_summary);
-  } catch (e) {
-    setStatus('ideasStatus', 'خطأ: ' + e.message, false);
-  }
+/* ---------- Ideas ---------- */
+
+function currentCampaignBar() {
+  const st = getState();
+  if (!st.campaignId) return null;
+  return `<div class="current">الحملة الحالية: <b>#${st.campaignId}</b> — <a href="#/campaigns">تغيير</a></div>`;
 }
 
-async function listIdeas() {
-  if (!state.campaignId) return;
+async function renderIdeas(view) {
+  const st = getState();
+  if (!st.campaignId) {
+    view.innerHTML = `<div class="card"><div class="sub">اختر حملة أولًا من صفحة الحملات أو خط الإنتاج.</div><button onclick="location.hash='#/campaigns'">الذهاب للحملات</button></div>`;
+    return;
+  }
+  view.innerHTML = `
+    ${currentCampaignBar()}
+    <div class="card">
+      <h2>إضافة فكرة يدويًا</h2>
+      <textarea id="conceptSummary" placeholder="وصف مختصر لفكرة المحتوى"></textarea>
+      <button onclick="createIdea(${st.campaignId})">إضافة فكرة</button>
+      <div id="createIdeaStatus" class="status-line"></div>
+    </div>
+    <div class="card">
+      <h2>الأفكار</h2>
+      <button class="secondary" onclick="loadIdeas(${st.campaignId})">تحديث</button>
+      <div id="ideasCascadeStatus" class="status-line"></div>
+      <table><thead><tr><th>ID</th><th>الفكرة</th><th>المصدر</th><th>الحالة</th><th></th></tr></thead><tbody id="ideasTbody"></tbody></table>
+    </div>`;
+  await loadIdeas(st.campaignId);
+}
+
+let _ideasCache = [];
+
+async function loadIdeas(campaignId) {
   try {
-    const data = await api(`/campaigns/${state.campaignId}/ideas`);
-    const tbody = document.querySelector('#ideasTable tbody');
-    tbody.innerHTML = '';
-    data.forEach(i => {
-      const tr = document.createElement('tr');
-      tr.className = 'row-selectable';
-      tr.innerHTML = `<td>${i.id}</td><td>${i.concept_summary.slice(0, 40)}</td><td>${i.status}</td>`;
-      tr.onclick = () => selectIdea(i.id, i.concept_summary);
-      tbody.appendChild(tr);
+    const data = await api(`/campaigns/${campaignId}/ideas?limit=100`);
+    _ideasCache = data;
+    const tbody = document.getElementById('ideasTbody');
+    tbody.innerHTML = data.map((i, idx) => `<tr>
+      <td>${i.id}</td><td>${escapeHtml(i.concept_summary.slice(0, 60))}</td><td>${escapeHtml(i.source)}</td>
+      <td><span class="pill ${i.status === 'selected' ? 'ok' : i.status === 'rejected' ? 'err' : 'muted'}">${escapeHtml(i.status)}</span></td>
+      <td>
+        <button data-select-idx="${idx}" style="margin:0" ${i.status !== 'proposed' ? 'disabled' : ''}>اختيار</button>
+        <button class="danger" data-reject-idx="${idx}" style="margin:0" ${i.status !== 'proposed' ? 'disabled' : ''}>رفض</button>
+      </td></tr>`).join('') || '<tr><td colspan="5" class="sub">لا توجد أفكار بعد — شغّل البحث من خط الإنتاج أو أضف فكرة يدويًا.</td></tr>';
+    tbody.querySelectorAll('[data-select-idx]').forEach(btn => {
+      btn.onclick = () => selectIdea(_ideasCache[parseInt(btn.dataset.selectIdx, 10)].id);
+    });
+    tbody.querySelectorAll('[data-reject-idx]').forEach(btn => {
+      btn.onclick = () => rejectIdea(_ideasCache[parseInt(btn.dataset.rejectIdx, 10)].id);
     });
   } catch (e) {
-    setStatus('ideasStatus', 'تعذر تحميل الأفكار: ' + e.message, false);
+    setStatus('ideasCascadeStatus', 'تعذر تحميل الأفكار: ' + e.message, false);
   }
 }
 
-function selectIdea(id, summary) {
-  state.ideaId = id;
-  document.getElementById('curIdea').textContent = `#${id}`;
+async function createIdea(campaignId) {
+  const concept_summary = document.getElementById('conceptSummary').value.trim();
+  if (!concept_summary) { setStatus('createIdeaStatus', 'وصف الفكرة مطلوب', false); return; }
+  try {
+    const data = await api(`/campaigns/${campaignId}/ideas`, { method: 'POST', body: JSON.stringify({ concept_summary }) });
+    setStatus('createIdeaStatus', 'تم إنشاء الفكرة رقم ' + data.id, true);
+    await loadIdeas(campaignId);
+  } catch (e) {
+    setStatus('createIdeaStatus', 'خطأ: ' + e.message, false);
+  }
 }
 
-async function generateScripts() {
-  if (!state.ideaId) { setStatus('scriptsStatus', 'اختر فكرة أولًا', false); return; }
+async function selectIdea(ideaId) {
+  try {
+    setStatus('ideasCascadeStatus', 'جارٍ اختيار الفكرة وتوليد السكريبت والفيديو تلقائيًا...', null);
+    const data = await api(`/ideas/${ideaId}/select`, { method: 'POST', body: JSON.stringify({}) });
+    const patch = { ideaId: data.idea.id };
+    if (data.scripts && data.scripts.length) patch.scriptId = data.scripts[0].id;
+    if (data.video) patch.videoId = data.video.id;
+    setState(patch);
+    setStatus('ideasCascadeStatus', `المرحلة: ${data.stage_reached}\n${data.detail}`, true);
+    await loadIdeas(getState().campaignId);
+  } catch (e) {
+    setStatus('ideasCascadeStatus', 'خطأ: ' + e.message, false);
+  }
+}
+
+async function rejectIdea(ideaId) {
+  try {
+    await api(`/ideas/${ideaId}/reject`, { method: 'POST' });
+    await loadIdeas(getState().campaignId);
+  } catch (e) {
+    setStatus('ideasCascadeStatus', 'خطأ: ' + e.message, false);
+  }
+}
+
+/* ---------- Scripts ---------- */
+
+async function renderScripts(view) {
+  const st = getState();
+  if (!st.ideaId) {
+    view.innerHTML = `<div class="card"><div class="sub">اختر فكرة أولًا (يتم ذلك من صفحة الأفكار عبر زر "اختيار").</div><button onclick="location.hash='#/ideas'">الذهاب للأفكار</button></div>`;
+    return;
+  }
+  view.innerHTML = `
+    <div class="current">الفكرة الحالية: <b>#${st.ideaId}</b> — <a href="#/ideas">تغيير</a></div>
+    <div class="card">
+      <h2>توليد نسخ إضافية (اختياري)</h2>
+      <label>عدد النسخ</label>
+      <input id="numVariants" type="number" value="2" min="1" max="10">
+      <button onclick="generateScripts(${st.ideaId})">توليد سكريبتات</button>
+      <div id="scriptsGenStatus" class="status-line"></div>
+    </div>
+    <div class="card">
+      <h2>السكريبتات</h2>
+      <button class="secondary" onclick="loadScripts(${st.ideaId})">تحديث</button>
+      <table><thead><tr><th>ID</th><th>النسخة</th><th>الهوك</th><th>المدة</th><th>الحالة</th><th></th></tr></thead><tbody id="scriptsTbody"></tbody></table>
+      <div id="renderStatus" class="status-line"></div>
+    </div>`;
+  await loadScripts(st.ideaId);
+}
+
+let _scriptsCache = [];
+
+async function loadScripts(ideaId) {
+  try {
+    const data = await api(`/ideas/${ideaId}/scripts?limit=50`);
+    _scriptsCache = data;
+    const tbody = document.getElementById('scriptsTbody');
+    tbody.innerHTML = data.map((s, idx) => `<tr>
+      <td>${s.id}</td><td>${escapeHtml(s.variant_label)}</td><td>${escapeHtml((s.hook_text || '').slice(0, 40))}</td>
+      <td>${s.target_duration_s ?? '-'}s</td><td>${escapeHtml(s.generation_status)}</td>
+      <td><button data-render-idx="${idx}" style="margin:0">إنتاج فيديو</button></td></tr>`).join('') ||
+      '<tr><td colspan="6" class="sub">لا توجد سكريبتات لهذه الفكرة بعد.</td></tr>';
+    tbody.querySelectorAll('[data-render-idx]').forEach(btn => {
+      btn.onclick = () => renderVideoFromScript(_scriptsCache[parseInt(btn.dataset.renderIdx, 10)].id);
+    });
+  } catch (e) {
+    setStatus('scriptsGenStatus', 'تعذر تحميل السكريبتات: ' + e.message, false);
+  }
+}
+
+async function generateScripts(ideaId) {
   const num_variants = parseInt(document.getElementById('numVariants').value || '2', 10);
   try {
-    const data = await api(`/ideas/${state.ideaId}/scripts`, { method: 'POST', body: JSON.stringify({ num_variants }) });
-    setStatus('scriptsStatus', 'تم توليد ' + data.length + ' نسخة', true);
-    const tbody = document.querySelector('#scriptsTable tbody');
-    tbody.innerHTML = '';
-    data.forEach(s => {
-      const tr = document.createElement('tr');
-      tr.className = 'row-selectable';
-      tr.innerHTML = `<td>${s.id}</td><td>${s.status}</td>`;
-      tr.onclick = () => selectScript(s.id);
-      tbody.appendChild(tr);
-    });
+    const data = await api(`/ideas/${ideaId}/scripts`, { method: 'POST', body: JSON.stringify({ num_variants }) });
+    setStatus('scriptsGenStatus', 'تم توليد ' + data.length + ' نسخة', true);
+    await loadScripts(ideaId);
   } catch (e) {
-    setStatus('scriptsStatus', 'خطأ: ' + e.message, false);
+    setStatus('scriptsGenStatus', 'خطأ: ' + e.message, false);
   }
 }
 
-function selectScript(id) {
-  state.scriptId = id;
-  document.getElementById('curScript').textContent = `#${id}`;
-}
-
-async function renderVideo() {
-  if (!state.scriptId) { setStatus('renderStatus', 'اختر سكريبت أولًا', false); return; }
+async function renderVideoFromScript(scriptId) {
   try {
-    const data = await api(`/scripts/${state.scriptId}/render`, { method: 'POST', body: JSON.stringify({}) });
-    setCurrentVideo(data.id);
-    setStatus('renderStatus', `الحالة: ${data.render_status} — الملف: ${data.asset_url || '(manifest فقط، بدون renderer حقيقي)'}`, true);
+    setStatus('renderStatus', 'جارٍ إنتاج الفيديو...', null);
+    const data = await api(`/scripts/${scriptId}/render`, { method: 'POST', body: JSON.stringify({}) });
+    setState({ videoId: data.id });
+    setStatus('renderStatus', `الحالة: ${data.render_status} — الملف: ${data.asset_url || '(manifest فقط)'} — تابع في صفحة المراجعة والنشر.`, true);
   } catch (e) {
     setStatus('renderStatus', 'خطأ: ' + e.message, false);
   }
 }
 
-function setCurrentVideo(videoId) {
-  state.videoId = videoId;
-  document.getElementById('curVideo').textContent = `#${videoId}`;
-  document.getElementById('curVideoShared').textContent = `#${videoId}`;
-  unlock('reviewPublishCard');
+/* ---------- Videos / Review / Publish ---------- */
+
+async function renderVideos(view) {
+  view.innerHTML = `
+    <div class="card">
+      <h2>بانتظار المراجعة</h2>
+      <button class="secondary" onclick="loadPendingReview()">تحديث</button>
+      <table><thead><tr><th>ID</th><th>الحالة</th><th>الإنتاج</th><th>الجودة</th><th></th></tr></thead><tbody id="pendingTbody"></tbody></table>
+    </div>
+    <div class="card">
+      <h2>كل الفيديوهات</h2>
+      <button class="secondary" onclick="loadAllVideos()">تحديث</button>
+      <table><thead><tr><th>ID</th><th>الحالة</th><th>الإنتاج</th><th>الملف</th></tr></thead><tbody id="allVideosTbody"></tbody></table>
+    </div>
+    <div class="card" id="reviewCard" style="display:none">
+      <h2>مراجعة الفيديو <span id="reviewVideoLabel"></span></h2>
+      <div class="grid2">
+        <div>
+          <label>القرار</label>
+          <select id="reviewDecision">
+            <option value="approved">موافقة (approved)</option>
+            <option value="rejected">رفض (rejected)</option>
+            <option value="revision_requested">طلب تعديل (revision_requested)</option>
+          </select>
+        </div>
+        <div><label>سبب (اختياري)</label><input id="reasonCode" placeholder="مثال: policy_risk"></div>
+      </div>
+      <label>ملاحظات</label>
+      <textarea id="reviewNotes"></textarea>
+      <button onclick="submitReview()">إرسال القرار</button>
+      <div id="reviewStatus" class="status-line"></div>
+    </div>
+    <div class="card" id="publishCard" style="display:none">
+      <h2>نشر الفيديو <span id="publishVideoLabel"></span></h2>
+      <div class="grid2">
+        <div><label>Account ID (من صفحة الإعدادات أو /accounts)</label><input id="publishAccountId" type="number" placeholder="مثال: 1"></div>
+        <div><label>عنوان المنشور</label><input id="publishTitle" placeholder="عنوان"></div>
+      </div>
+      <textarea id="publishDescription" placeholder="وصف (اختياري)"></textarea>
+      <button onclick="publishVideo()">نشر</button>
+      <div id="publishStatus" class="status-line"></div>
+    </div>
+    <div class="card"><h2>سجل العمليات</h2><div id="log"></div></div>`;
+  await loadPendingReview();
+  await loadAllVideos();
 }
+
+let _reviewVideoId = null;
+
+async function loadPendingReview() {
+  try {
+    const data = await api('/videos/pending-review?limit=50');
+    const tbody = document.getElementById('pendingTbody');
+    tbody.innerHTML = data.map((v, idx) => `<tr>
+      <td>${v.id}</td><td><span class="pill warn">${escapeHtml(v.status)}</span></td><td>${escapeHtml(v.render_status)}</td>
+      <td>${v.quality_score ? (v.quality_score.originality_score ?? '-') : '-'}</td>
+      <td><button data-review-idx="${idx}" style="margin:0">مراجعة</button></td></tr>`).join('') ||
+      '<tr><td colspan="5" class="sub">لا يوجد فيديوهات بانتظار المراجعة</td></tr>';
+    tbody.querySelectorAll('[data-review-idx]').forEach(btn => {
+      btn.onclick = () => openReview(data[parseInt(btn.dataset.reviewIdx, 10)]);
+    });
+  } catch (e) {
+    logLine('تعذر تحميل قائمة المراجعة: ' + e.message);
+  }
+}
+
+async function loadAllVideos() {
+  try {
+    const data = await api('/videos?limit=50');
+    const tbody = document.getElementById('allVideosTbody');
+    tbody.innerHTML = data.map(v =>
+      `<tr><td>${v.id}</td><td>${escapeHtml(v.status)}</td><td>${escapeHtml(v.render_status)}</td><td class="sub">${escapeHtml(v.asset_url || '-')}</td></tr>`
+    ).join('') || '<tr><td colspan="4" class="sub">لا يوجد فيديوهات بعد</td></tr>';
+  } catch (e) {
+    logLine('تعذر تحميل قائمة الفيديوهات: ' + e.message);
+  }
+}
+
+function openReview(video) {
+  _reviewVideoId = video.id;
+  document.getElementById('reviewCard').style.display = 'block';
+  document.getElementById('reviewVideoLabel').textContent = '#' + video.id;
+  document.getElementById('publishCard').style.display = 'block';
+  document.getElementById('publishVideoLabel').textContent = '#' + video.id;
+  document.getElementById('reviewCard').scrollIntoView({ behavior: 'smooth' });
+}
+
+async function submitReview() {
+  if (!_reviewVideoId) { setStatus('reviewStatus', 'اختر فيديو أولًا', false); return; }
+  const decision = document.getElementById('reviewDecision').value;
+  const reason_code = document.getElementById('reasonCode').value.trim() || null;
+  const notes = document.getElementById('reviewNotes').value.trim() || null;
+  try {
+    const data = await api(`/videos/${_reviewVideoId}/review`, { method: 'POST', body: JSON.stringify({ decision, reason_code, notes }) });
+    let msg = 'تم تسجيل القرار: ' + data.decision;
+    if (data.auto_publish_status) msg += `\nالنشر التلقائي: ${data.auto_publish_status} — ${data.auto_publish_detail || ''}`;
+    if (data.auto_metrics_status) msg += `\nمزامنة المقاييس: ${data.auto_metrics_status} — ${data.auto_metrics_detail || ''}`;
+    setStatus('reviewStatus', msg, true);
+    await loadPendingReview();
+    await loadAllVideos();
+  } catch (e) {
+    setStatus('reviewStatus', 'خطأ: ' + e.message, false);
+  }
+}
+
+async function publishVideo() {
+  if (!_reviewVideoId) { setStatus('publishStatus', 'اختر فيديو أولًا', false); return; }
+  const account_id = parseInt(document.getElementById('publishAccountId').value, 10);
+  const title = document.getElementById('publishTitle').value.trim();
+  const description = document.getElementById('publishDescription').value.trim();
+  if (!account_id || !title) { setStatus('publishStatus', 'account_id والعنوان مطلوبان', false); return; }
+  try {
+    const data = await api(`/videos/${_reviewVideoId}/publish`, { method: 'POST', body: JSON.stringify({ account_id, title, description }) });
+    setStatus('publishStatus', 'الحالة: ' + data.status + (data.status === 'scheduled' ? ' (بانتظار نشر حقيقي — لا يوجد حساب منصة حقيقي متصل بعد)' : ''), true);
+  } catch (e) {
+    setStatus('publishStatus', 'خطأ: ' + e.message, false);
+  }
+}
+
+/* ---------- Settings ---------- */
+
+async function renderSettings(view) {
+  view.innerHTML = `<div class="card"><div class="sub">جارٍ التحميل...</div></div>`;
+  try {
+    const [settings, health] = await Promise.all([api('/dashboard/settings'), fetch('/health').then(r => r.json())]);
+    view.innerHTML = `
+      <div class="card">
+        <h2>حالة مزوّدي الذكاء الاصطناعي والإنتاج</h2>
+        <div class="kv-grid">
+          <div class="k">بيئة التشغيل (environment)</div><div>${escapeHtml(settings.environment)}</div>
+          <div class="k">مزوّد LLM (Research/Script)</div><div><span class="pill ${settings.llm_provider === 'fake' ? 'muted' : 'ok'}">${escapeHtml(settings.llm_provider)}</span></div>
+          <div class="k">مزوّد التفريغ النصي (Transcription)</div><div>${escapeHtml(settings.transcription_provider)}</div>
+          <div class="k">مزوّد الصوت (TTS)</div><div>${escapeHtml(settings.tts_provider)}</div>
+          <div class="k">محرك إنتاج الفيديو</div><div><span class="pill ${settings.renderer_backend === 'null' ? 'muted' : 'ok'}">${escapeHtml(settings.renderer_backend)}</span></div>
+          <div class="k">محرك قصّ المقاطع (Clip renderer)</div><div>${escapeHtml(settings.clip_renderer_backend)}</div>
+          <div class="k">النشر مفعّل (kill-switch)</div><div>${settings.publishing_enabled ? 'نعم' : 'لا — معطّل حاليًا'}</div>
+          <div class="k">مزوّد الإشعارات</div><div>${escapeHtml(settings.notification_provider)}</div>
+          <div class="k">نسخ احتياطي للوسائط</div><div>${settings.media_backup_enabled ? 'مفعّل' : 'غير مفعّل'}</div>
+          <div class="k">حد المعدل (rate limit backend)</div><div>${escapeHtml(settings.rate_limit_backend)}</div>
+        </div>
+      </div>
+      <div class="card">
+        <h2>حالة البنية التحتية (/health)</h2>
+        <div class="kv-grid">
+          <div class="k">الحالة العامة</div><div><span class="pill ${health.status === 'ok' ? 'ok' : 'err'}">${escapeHtml(health.status)}</span></div>
+          ${Object.entries(health.checks || {}).map(([k, v]) => `<div class="k">${escapeHtml(k)}</div><div>${escapeHtml(v)}</div>`).join('')}
+        </div>
+      </div>`;
+  } catch (e) {
+    view.innerHTML = `<div class="card"><div class="status-line err">تعذر تحميل الإعدادات: ${escapeHtml(e.message)}</div></div>`;
+  }
+}
+
+/* ---------- Clip factory (long-form video -> AI-selected clips) ---------- */
+
+async function renderClips(view) {
+  view.innerHTML = `
+    <div class="card">
+      <h2>المونتاج التلقائي (فيديو طويل → مقاطع قصيرة)</h2>
+      <div class="sub">ارفع فيديو طويل، والذكاء الاصطناعي يفهمه ويختار أفضل اللقطات ويقصّها فعليًا مع ترجمة وهوك.</div>
+      <label>عنوان الفيديو</label>
+      <input id="sourceVideoTitle" placeholder="مثال: حلقة بودكاست 12">
+      <label>ملف الفيديو</label>
+      <input id="sourceVideoFile" type="file" accept="video/*">
+      <button onclick="uploadSourceVideo()">رفع الفيديو</button>
+      <button class="secondary" onclick="listSourceVideos()">تحديث القائمة</button>
+      <div id="sourceVideoStatus" class="status-line"></div>
+      <table><thead><tr><th>ID</th><th>العنوان</th><th>حالة التفريغ النصي</th><th></th></tr></thead><tbody id="sourceVideosTbody"></tbody></table>
+    </div>
+    <div class="card" id="clipWorkCard" style="display:none">
+      <div class="current">الفيديو المحدد: <b id="curSourceVideo">-</b></div>
+      <button onclick="transcribeSourceVideo()">1. تفريغ الصوت نصيًا</button>
+      <button onclick="analyzeSourceVideo()">2. تحليل واختيار أفضل اللقطات (AI)</button>
+      <div id="analyzeStatus" class="status-line"></div>
+      <table><thead><tr><th>ID</th><th>البداية</th><th>النهاية</th><th>الهوك</th><th>التقييم</th><th></th></tr></thead><tbody id="clipsTbody"></tbody></table>
+      <div id="clipRenderStatus" class="status-line"></div>
+    </div>`;
+  await listSourceVideos();
+}
+
+let _sourceVideosCache = [];
+let _curSourceVideoId = null;
+let _clipsCache = [];
 
 async function uploadSourceVideo() {
   const title = document.getElementById('sourceVideoTitle').value.trim();
-  const fileInput = document.getElementById('sourceVideoFile');
-  const file = fileInput.files[0];
+  const file = document.getElementById('sourceVideoFile').files[0];
   if (!title || !file) { setStatus('sourceVideoStatus', 'العنوان والملف مطلوبان', false); return; }
   try {
     setStatus('sourceVideoStatus', 'جارٍ الرفع...', null);
@@ -420,7 +878,6 @@ async function uploadSourceVideo() {
     const data = await api('/source-videos', { method: 'POST', body: form });
     setStatus('sourceVideoStatus', 'تم رفع الفيديو رقم ' + data.id, true);
     await listSourceVideos();
-    selectSourceVideo(data.id, data.title);
   } catch (e) {
     setStatus('sourceVideoStatus', 'خطأ: ' + e.message, false);
   }
@@ -429,121 +886,64 @@ async function uploadSourceVideo() {
 async function listSourceVideos() {
   try {
     const data = await api('/source-videos?limit=50');
-    const tbody = document.querySelector('#sourceVideosTable tbody');
-    tbody.innerHTML = '';
-    data.forEach(v => {
-      const tr = document.createElement('tr');
-      tr.className = 'row-selectable';
-      tr.innerHTML = `<td>${v.id}</td><td>${v.title}</td><td>${v.transcription_status}</td>`;
-      tr.onclick = () => selectSourceVideo(v.id, v.title);
-      tbody.appendChild(tr);
+    _sourceVideosCache = data;
+    const tbody = document.getElementById('sourceVideosTbody');
+    tbody.innerHTML = data.map((v, idx) =>
+      `<tr><td>${v.id}</td><td>${escapeHtml(v.title)}</td><td>${escapeHtml(v.transcription_status)}</td><td><button data-pick-sv-idx="${idx}" style="margin:0">اختيار</button></td></tr>`
+    ).join('') || '<tr><td colspan="4" class="sub">لا توجد فيديوهات مرفوعة بعد</td></tr>';
+    tbody.querySelectorAll('[data-pick-sv-idx]').forEach(btn => {
+      btn.onclick = () => selectSourceVideo(_sourceVideosCache[parseInt(btn.dataset.pickSvIdx, 10)]);
     });
   } catch (e) {
     setStatus('sourceVideoStatus', 'تعذر تحميل القائمة: ' + e.message, false);
   }
 }
 
-function selectSourceVideo(id, title) {
-  state.sourceVideoId = id;
-  document.getElementById('curSourceVideo').textContent = `#${id} (${title})`;
+function selectSourceVideo(v) {
+  _curSourceVideoId = v.id;
+  document.getElementById('clipWorkCard').style.display = 'block';
+  document.getElementById('curSourceVideo').textContent = `#${v.id} (${v.title})`;
 }
 
 async function transcribeSourceVideo() {
-  if (!state.sourceVideoId) { setStatus('analyzeStatus', 'اختر فيديو أولًا', false); return; }
+  if (!_curSourceVideoId) { setStatus('analyzeStatus', 'اختر فيديو أولًا', false); return; }
   try {
     setStatus('analyzeStatus', 'جارٍ تفريغ الصوت نصيًا...', null);
-    const data = await api(`/source-videos/${state.sourceVideoId}/transcribe`, { method: 'POST', body: JSON.stringify({}) });
-    setStatus('analyzeStatus', 'اكتمل التفريغ النصي: ' + data.transcription_status, true);
-    await listSourceVideos();
+    const data = await api(`/source-videos/${_curSourceVideoId}/transcribe`, { method: 'POST', body: JSON.stringify({}) });
+    setStatus('analyzeStatus', 'اكتمل: ' + data.transcription_status, true);
   } catch (e) {
     setStatus('analyzeStatus', 'خطأ: ' + e.message, false);
   }
 }
 
 async function analyzeSourceVideo() {
-  if (!state.sourceVideoId) { setStatus('analyzeStatus', 'اختر فيديو أولًا', false); return; }
+  if (!_curSourceVideoId) { setStatus('analyzeStatus', 'اختر فيديو أولًا', false); return; }
   try {
-    setStatus('analyzeStatus', 'جارٍ تحليل الفيديو واختيار أفضل اللقطات...', null);
-    const data = await api(`/source-videos/${state.sourceVideoId}/analyze`, { method: 'POST', body: JSON.stringify({ max_clips: 5 }) });
+    setStatus('analyzeStatus', 'جارٍ التحليل واختيار أفضل اللقطات...', null);
+    const data = await api(`/source-videos/${_curSourceVideoId}/analyze`, { method: 'POST', body: JSON.stringify({ max_clips: 5 }) });
+    _clipsCache = data;
     setStatus('analyzeStatus', 'تم اقتراح ' + data.length + ' مقطع', true);
-    const tbody = document.querySelector('#clipsTable tbody');
-    tbody.innerHTML = '';
-    data.forEach(c => {
-      const tr = document.createElement('tr');
-      tr.className = 'row-selectable';
-      tr.innerHTML = `<td>${c.id}</td><td>${c.start_s.toFixed(1)}s</td><td>${c.end_s.toFixed(1)}s</td><td>${c.hook_text || ''}</td><td>${c.predicted_score ?? ''}</td>`;
-      tr.onclick = () => selectClip(c.id);
-      tbody.appendChild(tr);
+    const tbody = document.getElementById('clipsTbody');
+    tbody.innerHTML = data.map((c, idx) =>
+      `<tr><td>${c.id}</td><td>${c.start_s.toFixed(1)}s</td><td>${c.end_s.toFixed(1)}s</td><td>${escapeHtml(c.hook_text || '')}</td><td>${c.predicted_score ?? ''}</td>` +
+      `<td><button data-clip-idx="${idx}" style="margin:0">قصّ وترجمة</button></td></tr>`
+    ).join('');
+    tbody.querySelectorAll('[data-clip-idx]').forEach(btn => {
+      btn.onclick = () => renderClip(_clipsCache[parseInt(btn.dataset.clipIdx, 10)].id);
     });
   } catch (e) {
     setStatus('analyzeStatus', 'خطأ: ' + e.message, false);
   }
 }
 
-function selectClip(id) {
-  state.clipId = id;
-  document.getElementById('curClip').textContent = `#${id}`;
-}
-
-async function renderClip() {
-  if (!state.clipId) { setStatus('clipRenderStatus', 'اختر مقطعًا أولًا', false); return; }
+async function renderClip(clipId) {
   try {
     setStatus('clipRenderStatus', 'جارٍ قصّ المقطع وإضافة الترجمة...', null);
-    const data = await api(`/clips/${state.clipId}/render`, { method: 'POST', body: JSON.stringify({}) });
-    setCurrentVideo(data.id);
-    setStatus('clipRenderStatus', `تم — الحالة: ${data.render_status}، المدة: ${data.duration_s}s، الملف: ${data.asset_url}. أكمل المراجعة والنشر أدناه.`, true);
+    const data = await api(`/clips/${clipId}/render`, { method: 'POST', body: JSON.stringify({}) });
+    setState({ videoId: data.id });
+    setStatus('clipRenderStatus', `تم — الحالة: ${data.render_status}، الملف: ${data.asset_url}. تابع المراجعة والنشر من صفحة "المراجعة والنشر".`, true);
   } catch (e) {
     setStatus('clipRenderStatus', 'خطأ: ' + e.message, false);
-  }
-}
-
-async function submitReview() {
-  if (!state.videoId) { setStatus('reviewStatus', 'لا يوجد فيديو محدد بعد', false); return; }
-  const decision = document.getElementById('reviewDecision').value;
-  const reason_code = document.getElementById('reasonCode').value.trim() || null;
-  const notes = document.getElementById('reviewNotes').value.trim() || null;
-  try {
-    const data = await api(`/videos/${state.videoId}/review`, { method: 'POST', body: JSON.stringify({ decision, reason_code, notes }) });
-    setStatus('reviewStatus', 'تم تسجيل القرار: ' + data.decision, true);
-  } catch (e) {
-    setStatus('reviewStatus', 'خطأ: ' + e.message, false);
-  }
-}
-
-async function publishVideo() {
-  if (!state.videoId) { setStatus('publishStatus', 'لا يوجد فيديو محدد بعد', false); return; }
-  const account_id = parseInt(document.getElementById('publishAccountId').value, 10);
-  const title = document.getElementById('publishTitle').value.trim();
-  const description = document.getElementById('publishDescription').value.trim();
-  if (!account_id || !title) { setStatus('publishStatus', 'account_id والعنوان مطلوبان', false); return; }
-  try {
-    const data = await api(`/videos/${state.videoId}/publish`, { method: 'POST', body: JSON.stringify({ account_id, title, description }) });
-    setStatus('publishStatus', 'تم النشر — الحالة: ' + data.status, true);
-  } catch (e) {
-    setStatus('publishStatus', 'خطأ: ' + e.message, false);
-  }
-}
-
-async function setBudget() {
-  const monthly_limit_usd = parseFloat(document.getElementById('budgetAmount').value);
-  if (!monthly_limit_usd || monthly_limit_usd <= 0) { setStatus('budgetStatus', 'أدخل رقمًا أكبر من صفر', false); return; }
-  try {
-    const data = await api('/budget/ceilings', { method: 'POST', body: JSON.stringify({ scope: 'system', monthly_limit_usd }) });
-    setStatus('budgetStatus', 'تم تعيين السقف: ' + data.monthly_limit_usd + ' دولار/شهر', true);
-  } catch (e) {
-    setStatus('budgetStatus', 'خطأ: ' + e.message, false);
-  }
-}
-
-async function loadSummary() {
-  try {
-    const data = await api('/dashboard/summary');
-    document.getElementById('summaryBox').textContent =
-      `الحملات: ${data.campaign_count} | بانتظار المراجعة: ${data.pending_review_count}\n` +
-      `التكلفة الكلية: $${data.total_cost_usd.toFixed(2)} | الإيراد: $${data.total_revenue_usd.toFixed(2)} | الربح: $${data.profit_usd.toFixed(2)}\n` +
-      `الفيديوهات حسب الحالة: ${JSON.stringify(data.video_counts_by_status)}`;
-  } catch (e) {
-    setStatus('summaryBox', 'تعذر تحميل الملخص: ' + e.message, false);
   }
 }
 </script>
