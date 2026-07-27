@@ -14,6 +14,11 @@ from content_factory.db.models.enums import ClipStatus
 from content_factory.db.models.source_video import SourceVideo
 from content_factory.llm.base import LLMClient
 from content_factory.logging_config import get_logger
+from content_factory.services.hook_scoring import (
+    HOOK_FRAMEWORKS,
+    format_hook_frameworks_for_prompt,
+    score_hook_strength,
+)
 from content_factory.transcription.base import TranscriptSegment
 from content_factory.video_clipping.scene_detection import snap_to_nearest_scene_change
 
@@ -24,18 +29,29 @@ _SYSTEM_PROMPT = (
     "You are given a timestamped transcript of a long-form video and must "
     "identify the specific moments most likely to perform well as "
     "standalone short-form clips (a strong hook, a self-contained idea, "
-    "high emotional or informational density). You never invent content "
-    "that isn't in the transcript, and every start/end time you return "
-    "must fall within the transcript's own timestamp range. Respond with a "
-    "single JSON array only, no prose outside the JSON array."
+    "high emotional or informational density). Every hook you write must "
+    "use one of the named, proven hook frameworks you are given - pick the "
+    "one that best fits the moment, don't invent a new one. You never "
+    "invent content that isn't in the transcript, and every start/end time "
+    "you return must fall within the transcript's own timestamp range. "
+    "Respond with a single JSON array only, no prose outside the JSON array."
 )
 
 _RESPONSE_SCHEMA_HINT = """
+Proven short-form hook frameworks (pick exactly one per clip - use its key
+as "hook_framework"):
+{hook_frameworks}
+
+The overlay hook is on screen for the first 1-3 seconds - it must stop the
+scroll on its own, using words from (or directly inspired by) this moment's
+own transcript text, never invented content.
+
 Return a JSON array with up to {max_clips} objects, ordered best-first, each shaped as:
 {{
   "start_s": <float, seconds into the source video>,
   "end_s": <float, seconds into the source video, typically 15-90 seconds after start_s>,
-  "hook_text": "<a short, punchy hook to overlay on the clip, drawn from or inspired by this moment>",
+  "hook_framework": "<one of the framework keys above>",
+  "hook_text": "<a short, punchy hook using that framework, drawn from or inspired by this moment>",
   "predicted_score": <float 0-1, your estimate of how well this clip will perform>,
   "reason": "<one sentence on why this moment stands out>"
 }}
@@ -110,11 +126,18 @@ class ClipSelectionAgent:
                     snapped_end = snap_to_nearest_scene_change(end_s, scene_changes)
                     if snapped_end > snapped_start:
                         start_s, end_s = snapped_start, snapped_end
+                hook_text = candidate.get("hook_text")
+                hook_framework = candidate.get("hook_framework")
+                if hook_framework not in HOOK_FRAMEWORKS:
+                    hook_framework = None
+                hook_strength_score = score_hook_strength(hook_text).overall if hook_text else None
                 clip = Clip(
                     source_video_id=source_video.id,
                     start_s=start_s,
                     end_s=end_s,
-                    hook_text=candidate.get("hook_text"),
+                    hook_text=hook_text,
+                    hook_framework=hook_framework,
+                    hook_strength_score=hook_strength_score,
                     predicted_score=candidate.get("predicted_score"),
                     reason=candidate.get("reason"),
                     status=ClipStatus.SUGGESTED,
@@ -137,5 +160,5 @@ class ClipSelectionAgent:
         )
         return (
             f"Timestamped transcript:\n{transcript_block}\n\n"
-            f"{_RESPONSE_SCHEMA_HINT.format(max_clips=max_clips)}"
+            f"{_RESPONSE_SCHEMA_HINT.format(max_clips=max_clips, hook_frameworks=format_hook_frameworks_for_prompt())}"
         )

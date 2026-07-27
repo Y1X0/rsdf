@@ -133,8 +133,15 @@ def find_or_create_hook(
     return db_safety.get_or_create(db, query=_query, create=_create)
 
 
-def record_hook_usage(db: Session, *, niche_id: int | None, hook_text: str) -> HookLibrary:
-    hook = find_or_create_hook(db, niche_id=niche_id, hook_text=hook_text)
+def record_hook_usage(
+    db: Session, *, niche_id: int | None, hook_text: str, hook_type: str | None = None
+) -> HookLibrary:
+    """`hook_type` is normally the generating agent's own
+    `hook_framework` (see services/hook_scoring.py's HOOK_FRAMEWORKS) -
+    only used if this exact (niche_id, hook_text) pair doesn't already
+    have a HookLibrary row (find_or_create_hook's own first-write-wins
+    semantics), same as it already worked for competitor-observed hooks."""
+    hook = find_or_create_hook(db, niche_id=niche_id, hook_text=hook_text, hook_type=hook_type)
     hook.times_used += 1
     db.flush()
     return hook
@@ -157,6 +164,33 @@ def record_hook_outcome(
     return hook
 
 
+def _diversify_by_hook_type(candidates: list[HookLibrary], *, limit: int) -> list[HookLibrary]:
+    """Round-robins across distinct `hook_type` values (in the order each
+    type's own best-scoring hook first appears in `candidates`, which is
+    already score-sorted) instead of just taking the top N overall - a
+    single hook_type/framework that happens to score highest would
+    otherwise dominate every retrieval, feeding ScriptAgent/
+    ClipSelectionAgent only ever the same pattern as "proven" and biasing
+    everything they write toward it. Degrades to the exact previous
+    behavior when there's only one distinct hook_type (or none at all)."""
+    by_type: dict[str | None, list[HookLibrary]] = {}
+    order: list[str | None] = []
+    for hook in candidates:
+        if hook.hook_type not in by_type:
+            by_type[hook.hook_type] = []
+            order.append(hook.hook_type)
+        by_type[hook.hook_type].append(hook)
+
+    result: list[HookLibrary] = []
+    while len(result) < limit and any(by_type[t] for t in order):
+        for hook_type in order:
+            if len(result) >= limit:
+                break
+            if by_type[hook_type]:
+                result.append(by_type[hook_type].pop(0))
+    return result
+
+
 def get_top_hooks(db: Session, *, niche_id: int | None, limit: int = 5, offset: int = 0) -> list[HookLibrary]:
     query = db.query(HookLibrary)
     if niche_id is not None:
@@ -164,7 +198,15 @@ def get_top_hooks(db: Session, *, niche_id: int | None, limit: int = 5, offset: 
     query = query.order_by(
         nullslast(HookLibrary.best_viral_score.desc()), HookLibrary.created_at.desc()
     )
-    return query.offset(offset).limit(limit).all()
+
+    if offset:
+        # Diversification only makes sense for the first page - a caller
+        # paginating past it gets plain score-ordering, unaffected.
+        return query.offset(offset).limit(limit).all()
+
+    candidate_pool_size = max(limit * 4, 20)
+    candidates = query.limit(candidate_pool_size).all()
+    return _diversify_by_hook_type(candidates, limit=limit)
 
 
 def get_patterns(

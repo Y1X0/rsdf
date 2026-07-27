@@ -13,6 +13,8 @@ class ClipOut(BaseModel):
     start_s: float
     end_s: float
     hook_text: str | None
+    hook_framework: str | None
+    hook_strength_score: float | None
     predicted_score: float | None
     reason: str | None
     status: ClipStatus

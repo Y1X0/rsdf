@@ -126,6 +126,58 @@ def test_generate_variants_returns_empty_list_when_every_item_is_malformed(db_se
     assert scripts == []
 
 
+def test_generate_variants_stores_a_recognized_hook_framework_and_computed_strength_score(db_session):
+    canned = [
+        {
+            "variant_label": "v1",
+            "hook_framework": "curiosity_gap",
+            "hook_text": "The one mistake that's costing you followers",
+            "full_text": "full 1",
+        }
+    ]
+    llm = FakeLLMClient(response_builder=lambda system, prompt: json.dumps(canned))
+    agent = ScriptAgent(llm)
+    idea = _idea(db_session)
+
+    scripts = agent.generate_variants(db_session, idea=idea, retrieved_hooks=[], num_variants=1)
+
+    assert len(scripts) == 1
+    assert scripts[0].hook_framework == "curiosity_gap"
+    assert scripts[0].hook_strength_score is not None
+    assert 0 <= scripts[0].hook_strength_score <= 100
+
+
+def test_generate_variants_discards_an_unrecognized_hook_framework_instead_of_storing_junk(db_session):
+    """A real LLM can ignore the prompt's own instruction to pick from the
+    given list - hook_framework must stay a stable, machine-usable
+    identifier, not accumulate arbitrary invented values."""
+    canned = [
+        {
+            "variant_label": "v1",
+            "hook_framework": "something_the_llm_made_up",
+            "hook_text": "hook 1",
+            "full_text": "full 1",
+        }
+    ]
+    llm = FakeLLMClient(response_builder=lambda system, prompt: json.dumps(canned))
+    agent = ScriptAgent(llm)
+    idea = _idea(db_session)
+
+    scripts = agent.generate_variants(db_session, idea=idea, retrieved_hooks=[], num_variants=1)
+
+    assert scripts[0].hook_framework is None
+
+
+def test_prompt_includes_the_full_hook_framework_taxonomy(db_session):
+    from content_factory.services.hook_scoring import HOOK_FRAMEWORKS
+
+    idea = _idea(db_session)
+    prompt = ScriptAgent._build_prompt(idea=idea, retrieved_hooks=[], num_variants=1)
+
+    for key in HOOK_FRAMEWORKS:
+        assert key in prompt
+
+
 def test_default_fake_llm_response_yields_empty_list_when_no_builder_given(db_session):
     """Exercises the production safe-degradation default (no API key
     configured) directly — must not crash, must produce an empty, clearly

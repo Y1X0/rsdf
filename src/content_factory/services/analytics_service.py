@@ -142,10 +142,25 @@ def compute_viral_score(db: Session, *, video: Video, snapshot: MetricsSnapshot)
     db.flush()
 
     script = video.script
+    clip = video.clip
     if script is not None:
         niche_id = script.idea.campaign.niche_id if script.idea and script.idea.campaign else None
         content_intelligence.record_hook_outcome(
             db, niche_id=niche_id, hook_text=script.hook_text, viral_score=score
+        )
+    elif clip is not None and clip.hook_text:
+        # Same hook-outcome tracking as the Script pipeline above, applied
+        # to the clip factory's own hooks for the first time - previously
+        # a clip's real-world performance never fed back into HookLibrary
+        # at all, so get_top_hooks' retrieval never learned from real clip
+        # outcomes, only script outcomes.
+        niche_id = (
+            clip.source_video.campaign.niche_id
+            if clip.source_video and clip.source_video.campaign
+            else None
+        )
+        content_intelligence.record_hook_outcome(
+            db, niche_id=niche_id, hook_text=clip.hook_text, viral_score=score
         )
 
     logger.info("viral_score_computed", video_id=video.id, score=score, recommendation=recommendation)

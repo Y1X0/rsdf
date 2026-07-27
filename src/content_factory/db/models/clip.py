@@ -1,4 +1,4 @@
-from sqlalchemy import Enum, Float, ForeignKey, Text
+from sqlalchemy import Enum, Float, ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from content_factory.db.base import Base
@@ -25,6 +25,12 @@ class Clip(TimestampMixin, Base):
     start_s: Mapped[float] = mapped_column(Float)
     end_s: Mapped[float] = mapped_column(Float)
     hook_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Same treatment as Script.hook_framework/hook_strength_score (see
+    # db/models/content.py and services/hook_scoring.py) - the clip
+    # factory's hook_text now feeds the same pre-publish scoring and
+    # named-pattern taxonomy as the Script pipeline's hooks.
+    hook_framework: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    hook_strength_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     caption_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     predicted_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)

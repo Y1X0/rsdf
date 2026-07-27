@@ -59,6 +59,52 @@ def test_analyze_with_no_transcript_segments_yields_no_clips(client):
     assert resp.json() == []
 
 
+def test_analyze_records_hook_usage_into_the_shared_hook_library(client):
+    """Regression test for a real gap: clip-factory hooks previously never
+    reached content_intelligence.record_hook_usage at all (only Script-
+    pipeline hooks did, via api/routers/content.py's own equivalent call) -
+    so get_top_hooks' retrieval never learned anything from clip hooks."""
+    import json
+
+    from content_factory.api import deps
+    from content_factory.api.main import app
+    from content_factory.llm.providers.fake_provider import FakeLLMClient
+
+    created = _upload_source_video(client).json()
+    client.post(f"/source-videos/{created['id']}/transcribe", json={})
+
+    canned = [
+        {
+            "start_s": 0.0, "end_s": 5.0,
+            "hook_framework": "curiosity_gap",
+            "hook_text": "a very specific clip hook for this test",
+            "predicted_score": 0.8, "reason": "n/a",
+        }
+    ]
+    clip_llm = FakeLLMClient(response_builder=lambda system, prompt: json.dumps(canned))
+    app.dependency_overrides[deps.get_llm_client] = lambda: clip_llm
+    try:
+        resp = client.post(f"/source-videos/{created['id']}/analyze", json={"max_clips": 5})
+    finally:
+        del app.dependency_overrides[deps.get_llm_client]
+
+    assert resp.status_code == 200
+    clips = resp.json()
+    assert len(clips) == 1
+    assert clips[0]["hook_text"] == "a very specific clip hook for this test"
+
+    from content_factory.services import content_intelligence
+
+    db = client.db_session_factory()
+    try:
+        hooks = content_intelligence.get_top_hooks(db, niche_id=None)
+        matching = [h for h in hooks if h.hook_text == "a very specific clip hook for this test"]
+        assert len(matching) == 1
+        assert matching[0].times_used == 1
+    finally:
+        db.close()
+
+
 def test_list_clips_for_source_video(client):
     created = _upload_source_video(client).json()
     resp = client.get(f"/source-videos/{created['id']}/clips")

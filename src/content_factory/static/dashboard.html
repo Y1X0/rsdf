@@ -648,7 +648,7 @@ async function loadScripts(ideaId) {
     _scriptsCache = data;
     const tbody = document.getElementById('scriptsTbody');
     tbody.innerHTML = data.map((s, idx) => `<tr>
-      <td>${s.id}</td><td>${escapeHtml(s.variant_label)}</td><td>${escapeHtml((s.hook_text || '').slice(0, 40))}</td>
+      <td>${s.id}</td><td>${escapeHtml(s.variant_label)}</td><td>${escapeHtml((s.hook_text || '').slice(0, 40))}${s.hook_strength_score != null ? ` <span class="sub">(${Math.round(s.hook_strength_score)}/100)</span>` : ''}</td>
       <td>${s.target_duration_s ?? '-'}s</td><td>${escapeHtml(s.generation_status)}</td>
       <td><button data-render-idx="${idx}" style="margin:0">إنتاج فيديو</button></td></tr>`).join('') ||
       '<tr><td colspan="6" class="sub">لا توجد سكريبتات لهذه الفكرة بعد.</td></tr>';
@@ -971,7 +971,7 @@ async function analyzeSourceVideo() {
     setStatus('analyzeStatus', 'تم اقتراح ' + data.length + ' مقطع', true);
     const tbody = document.getElementById('clipsTbody');
     tbody.innerHTML = data.map((c, idx) =>
-      `<tr><td>${c.id}</td><td>${c.start_s.toFixed(1)}s</td><td>${c.end_s.toFixed(1)}s</td><td>${escapeHtml(c.hook_text || '')}</td><td>${c.predicted_score ?? ''}</td>` +
+      `<tr><td>${c.id}</td><td>${c.start_s.toFixed(1)}s</td><td>${c.end_s.toFixed(1)}s</td><td>${escapeHtml(c.hook_text || '')}${c.hook_strength_score != null ? ` <span class="sub">(${Math.round(c.hook_strength_score)}/100)</span>` : ''}</td><td>${c.predicted_score ?? ''}</td>` +
       `<td><button data-clip-idx="${idx}" style="margin:0">قصّ وترجمة</button></td></tr>`
     ).join('');
     tbody.querySelectorAll('[data-clip-idx]').forEach(btn => {

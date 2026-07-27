@@ -101,6 +101,54 @@ def test_select_clips_leaves_boundaries_untouched_when_no_scene_change_is_close(
     assert clips[0].end_s == 8.0
 
 
+def test_select_clips_stores_a_recognized_hook_framework_and_computed_strength_score(db_session):
+    canned = [
+        {
+            "start_s": 2.0, "end_s": 8.0,
+            "hook_framework": "curiosity_gap",
+            "hook_text": "The one mistake that's costing you followers",
+            "predicted_score": 0.9, "reason": "n/a",
+        }
+    ]
+    llm = FakeLLMClient(response_builder=lambda system, prompt: json.dumps(canned))
+    agent = ClipSelectionAgent(llm)
+    source_video = _source_video(db_session)
+
+    clips = agent.select_clips(db_session, source_video=source_video, segments=_segments(), max_clips=5)
+
+    assert len(clips) == 1
+    assert clips[0].hook_framework == "curiosity_gap"
+    assert clips[0].hook_strength_score is not None
+    assert 0 <= clips[0].hook_strength_score <= 100
+
+
+def test_select_clips_discards_an_unrecognized_hook_framework(db_session):
+    canned = [
+        {
+            "start_s": 2.0, "end_s": 8.0,
+            "hook_framework": "invented_by_the_llm",
+            "hook_text": "hook",
+            "predicted_score": 0.5, "reason": "n/a",
+        }
+    ]
+    llm = FakeLLMClient(response_builder=lambda system, prompt: json.dumps(canned))
+    agent = ClipSelectionAgent(llm)
+    source_video = _source_video(db_session)
+
+    clips = agent.select_clips(db_session, source_video=source_video, segments=_segments(), max_clips=5)
+
+    assert clips[0].hook_framework is None
+
+
+def test_prompt_includes_the_full_hook_framework_taxonomy():
+    from content_factory.services.hook_scoring import HOOK_FRAMEWORKS
+
+    prompt = ClipSelectionAgent._build_prompt(segments=_segments(), max_clips=5)
+
+    for key in HOOK_FRAMEWORKS:
+        assert key in prompt
+
+
 def test_select_clips_marks_agent_run_failed_and_reraises_on_error(db_session):
     def _boom(system, prompt):
         raise RuntimeError("provider unavailable")

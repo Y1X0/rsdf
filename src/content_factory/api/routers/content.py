@@ -341,7 +341,9 @@ def _generate_scripts_for_idea(
         hooks = content_intelligence.get_top_hooks(db, niche_id=niche_id, limit=5)
         scripts = agent.generate_variants(db, idea=idea, retrieved_hooks=hooks, num_variants=num_variants)
         for script in scripts:
-            content_intelligence.record_hook_usage(db, niche_id=niche_id, hook_text=script.hook_text)
+            content_intelligence.record_hook_usage(
+                db, niche_id=niche_id, hook_text=script.hook_text, hook_type=script.hook_framework
+            )
         return _ScriptBatchAnchor(id=idea.id, scripts=scripts)
 
     batch, _created = idempotency.run_idempotent(

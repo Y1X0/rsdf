@@ -34,7 +34,7 @@ from content_factory.logging_config import get_logger
 from content_factory.schemas.clip import ClipOut, ClipRenderRequestBody
 from content_factory.schemas.source_video import AnalyzeRequest, SourceVideoOut, TranscribeRequest
 from content_factory.schemas.video import VideoOut
-from content_factory.services import clip_service, idempotency
+from content_factory.services import clip_service, content_intelligence, idempotency
 from content_factory.services.budget_governor import enforce_budget
 from content_factory.transcription.base import TranscriptionProvider
 from content_factory.video_clipping.base import ClipRenderer
@@ -52,6 +52,8 @@ def _to_clip_out(clip: Clip) -> ClipOut:
         start_s=clip.start_s,
         end_s=clip.end_s,
         hook_text=clip.hook_text,
+        hook_framework=clip.hook_framework,
+        hook_strength_score=clip.hook_strength_score,
         predicted_score=clip.predicted_score,
         reason=clip.reason,
         status=clip.status,
@@ -159,14 +161,22 @@ def analyze_source_video(
     _principal: dict = Depends(require_operator),
 ) -> list[ClipOut]:
     source_video = _get_source_video_or_404(db, source_video_id)
-    enforce_budget(
-        db,
-        niche_id=_niche_id_for_campaign(db, source_video.campaign_id),
-        notification_provider=notification_provider,
-    )
+    niche_id = _niche_id_for_campaign(db, source_video.campaign_id)
+    enforce_budget(db, niche_id=niche_id, notification_provider=notification_provider)
     clips = clip_service.analyze_source_video(
         db, source_video=source_video, llm_client=llm_client, max_clips=payload.max_clips
     )
+    # Same treatment as the Script pipeline's own hook tracking
+    # (api/routers/content.py's _generate_scripts_for_idea): every hook a
+    # clip actually gets is recorded into the shared HookLibrary learning
+    # loop, so clip-factory hooks feed the same get_top_hooks retrieval
+    # and eventual real-outcome tracking as script hooks do - previously
+    # clip hooks never reached this system at all.
+    for clip in clips:
+        if clip.hook_text:
+            content_intelligence.record_hook_usage(
+                db, niche_id=niche_id, hook_text=clip.hook_text, hook_type=clip.hook_framework
+            )
     return [_to_clip_out(c) for c in clips]
 
 

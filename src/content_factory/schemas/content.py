@@ -62,6 +62,8 @@ class ScriptOut(BaseModel):
     variant_label: str
     experiment_group: str | None
     hook_text: str
+    hook_framework: str | None
+    hook_strength_score: float | None
     full_text: str
     cta_text: str | None
     target_duration_s: int | None

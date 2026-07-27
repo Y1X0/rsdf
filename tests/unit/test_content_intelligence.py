@@ -168,3 +168,50 @@ def test_get_top_hooks_orders_by_best_viral_score_desc(db_session):
 
     hooks = content_intelligence.get_top_hooks(db_session, niche_id=niche.id, limit=10)
     assert hooks[0].hook_text == "high"
+
+
+def test_get_top_hooks_diversifies_across_hook_types_instead_of_one_type_dominating(db_session):
+    """Regression test for a real gap: a single hook_type/framework that
+    happens to score highest across the board used to crowd out every
+    other type entirely - ScriptAgent/ClipSelectionAgent would only ever
+    see one "proven" pattern, biasing everything generated toward it."""
+    niche = _make_niche(db_session)
+    # Three curiosity_gap hooks, all scoring higher than the single
+    # bold_claim hook - without diversification, bold_claim would never
+    # appear in the top 2.
+    content_intelligence.find_or_create_hook(
+        db_session, niche_id=niche.id, hook_text="cg1", hook_type="curiosity_gap"
+    )
+    content_intelligence.record_hook_outcome(
+        db_session, niche_id=niche.id, hook_text="cg1", viral_score=0.95
+    )
+    content_intelligence.find_or_create_hook(
+        db_session, niche_id=niche.id, hook_text="cg2", hook_type="curiosity_gap"
+    )
+    content_intelligence.record_hook_outcome(
+        db_session, niche_id=niche.id, hook_text="cg2", viral_score=0.9
+    )
+    content_intelligence.find_or_create_hook(
+        db_session, niche_id=niche.id, hook_text="bc1", hook_type="bold_claim"
+    )
+    content_intelligence.record_hook_outcome(
+        db_session, niche_id=niche.id, hook_text="bc1", viral_score=0.5
+    )
+
+    hooks = content_intelligence.get_top_hooks(db_session, niche_id=niche.id, limit=2)
+
+    hook_types = {h.hook_type for h in hooks}
+    assert hook_types == {"curiosity_gap", "bold_claim"}
+
+
+def test_get_top_hooks_still_returns_best_first_within_a_single_type(db_session):
+    """When there's only one distinct hook_type (or none at all - the
+    common case for hooks recorded before this feature existed),
+    diversification must degrade to plain best-first ordering, not
+    change existing behavior."""
+    niche = _make_niche(db_session)
+    content_intelligence.record_hook_outcome(db_session, niche_id=niche.id, hook_text="low", viral_score=0.1)
+    content_intelligence.record_hook_outcome(db_session, niche_id=niche.id, hook_text="high", viral_score=0.9)
+
+    hooks = content_intelligence.get_top_hooks(db_session, niche_id=niche.id, limit=2)
+    assert [h.hook_text for h in hooks] == ["high", "low"]

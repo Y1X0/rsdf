@@ -3,11 +3,34 @@ from uuid import uuid4
 
 from content_factory.db.models.agent_run import AgentRun
 from content_factory.db.models.campaign import Campaign
+from content_factory.db.models.clip import Clip
 from content_factory.db.models.content import ContentIdea, Script
-from content_factory.db.models.enums import ProcessingStatus
+from content_factory.db.models.enums import ClipStatus, ProcessingStatus
 from content_factory.db.models.niche import Niche
+from content_factory.db.models.source_video import SourceVideo
 from content_factory.db.models.video import Video
 from content_factory.services import analytics_service
+
+
+def _make_video_with_clip(db_session, hook_text="a clip hook") -> tuple[Video, Clip]:
+    niche = Niche(name=f"finance-{uuid4()}")
+    db_session.add(niche)
+    db_session.flush()
+    campaign = Campaign(brand_name="Acme", niche_id=niche.id)
+    db_session.add(campaign)
+    db_session.flush()
+    source_video = SourceVideo(campaign_id=campaign.id, title="Long Video", storage_path="/tmp/x.mp4")
+    db_session.add(source_video)
+    db_session.flush()
+    clip = Clip(
+        source_video_id=source_video.id, start_s=0.0, end_s=5.0, hook_text=hook_text, status=ClipStatus.RENDERED,
+    )
+    db_session.add(clip)
+    db_session.flush()
+    video = Video(clip_id=clip.id)
+    db_session.add(video)
+    db_session.flush()
+    return video, clip
 
 
 def _make_video_with_script(db_session, hook_text="a hook") -> tuple[Video, Script]:
@@ -74,6 +97,24 @@ def test_record_metrics_feeds_hook_outcome_into_content_intelligence(db_session)
 
     hooks = content_intelligence.get_top_hooks(db_session, niche_id=video.script.idea.campaign.niche_id)
     matching = [h for h in hooks if h.hook_text == "a very specific hook"]
+    assert len(matching) == 1
+    assert matching[0].best_viral_score is not None
+
+
+def test_record_metrics_feeds_clip_hook_outcome_into_content_intelligence_too(db_session):
+    """Regression test for a real gap: clip-factory hooks never reached
+    HookLibrary's outcome tracking at all before this - only Script-
+    pipeline hooks did, via the `if script is not None` branch above.
+    Real-world clip performance must feed the same learning loop."""
+    video, clip = _make_video_with_clip(db_session, hook_text="a very specific clip hook")
+    analytics_service.record_metrics(db_session, video=video, views=1000, completion_rate=0.5)
+
+    from content_factory.services import content_intelligence
+
+    hooks = content_intelligence.get_top_hooks(
+        db_session, niche_id=clip.source_video.campaign.niche_id
+    )
+    matching = [h for h in hooks if h.hook_text == "a very specific clip hook"]
     assert len(matching) == 1
     assert matching[0].best_viral_score is not None
 

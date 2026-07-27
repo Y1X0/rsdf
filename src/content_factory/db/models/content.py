@@ -75,6 +75,16 @@ class Script(TimestampMixin, Base):
     experiment_group: Mapped[str | None] = mapped_column(String(50), nullable=True)
 
     hook_text: Mapped[str] = mapped_column(Text)
+    # Which named pattern from services/hook_scoring.py's HOOK_FRAMEWORKS
+    # the LLM says it used (e.g. "curiosity_gap") - nullable since older
+    # rows predate this, and a malformed/unrecognized value from the LLM
+    # is simply not stored rather than rejected (see ScriptAgent).
+    hook_framework: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    # Pre-publish heuristic score (0-100) from
+    # hook_scoring.score_hook_strength() - a proxy computed at generation
+    # time, independent of (and much earlier than) best_viral_score, which
+    # only exists once real post-publish metrics come in.
+    hook_strength_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     full_text: Mapped[str] = mapped_column(Text)
     cta_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     target_duration_s: Mapped[int | None] = mapped_column(Integer, nullable=True)
