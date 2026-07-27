@@ -30,6 +30,7 @@ when the caller didn't think to pass a key.
 import hashlib
 import json
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy.exc import IntegrityError
@@ -38,6 +39,18 @@ from sqlalchemy.orm import Session
 from content_factory.db.models.enums import ProcessingStatus
 from content_factory.db.models.idempotency import IdempotencyRecord
 from content_factory.logging_config import get_logger
+
+# How long an IN_PROGRESS record is trusted to mean "genuinely still
+# running" before a retry is allowed to reclaim it. This codebase's
+# request/response model is fully synchronous - there is no legitimate
+# call chain (LLM call, TTS, render) that takes anywhere near this long -
+# so a record still IN_PROGRESS past this threshold means the process
+# that was working on it died before reaching either the COMPLETED or
+# FAILED transition (e.g. an out-of-memory kill mid-render), not that
+# it's still in flight. Without this, a single crashed request permanently
+# wedges that (scope, key) pair: every future retry hits
+# IdempotencyInProgress forever, with no path back to COMPLETED or FAILED.
+STALE_IN_PROGRESS_THRESHOLD = timedelta(minutes=5)
 
 logger = get_logger(__name__)
 
@@ -120,10 +133,26 @@ def run_idempotent(
             logger.info("idempotent_replay", scope=scope, key=key, entity_id=record.result_entity_id)
             return load_existing(record.result_entity_id), False
         if record.status == ProcessingStatus.IN_PROGRESS:
-            raise IdempotencyInProgress(f"Request {key!r} for scope {scope!r} is already in progress.")
-        # FAILED -> allow retry, reuse the same record. This branch is now
-        # reachable through the real API (not just direct unit tests)
-        # because the FAILED transition below commits.
+            # SQLite (the test suite's engine) returns a naive datetime
+            # even from a DateTime(timezone=True) column, unlike Postgres -
+            # assume UTC rather than let the subtraction below raise.
+            updated_at = record.updated_at
+            if updated_at.tzinfo is None:
+                updated_at = updated_at.replace(tzinfo=UTC)
+            age = datetime.now(UTC) - updated_at
+            if age < STALE_IN_PROGRESS_THRESHOLD:
+                raise IdempotencyInProgress(f"Request {key!r} for scope {scope!r} is already in progress.")
+            logger.warning(
+                "idempotent_recovered_stale_in_progress_record",
+                scope=scope, key=key, stuck_for_seconds=age.total_seconds(),
+            )
+            # Falls through to the same reset-and-retry as the FAILED
+            # branch below - a crashed process left this record with no
+            # other way back to COMPLETED or FAILED.
+        # FAILED, or a recovered stale IN_PROGRESS -> allow retry, reuse
+        # the same record. The FAILED case is reachable through the real
+        # API (not just direct unit tests) because that transition commits
+        # below.
         record.status = ProcessingStatus.IN_PROGRESS
         record.error_message = None
         db.flush()

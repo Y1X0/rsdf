@@ -1,3 +1,5 @@
+from datetime import UTC, datetime, timedelta
+
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -7,7 +9,9 @@ from content_factory.db.base import Base
 from content_factory.db.models.enums import ProcessingStatus
 from content_factory.db.models.idempotency import IdempotencyRecord
 from content_factory.services.idempotency import (
+    STALE_IN_PROGRESS_THRESHOLD,
     IdempotencyConflict,
+    IdempotencyInProgress,
     _get_or_create_record,
     compute_fingerprint,
     run_idempotent,
@@ -137,6 +141,57 @@ def test_run_idempotent_allows_retry_after_failure(db_session):
     assert attempts["count"] == 2
     assert created is True
     assert entity.value == "created"
+
+
+def test_run_idempotent_raises_in_progress_for_a_recent_record(db_session):
+    """A record that only just started must still block a concurrent
+    duplicate request - this is the case the stale-recovery fix below must
+    not weaken."""
+    db_session.add(
+        IdempotencyRecord(
+            scope="inprogress.recent", key="k1", request_fingerprint=compute_fingerprint({"a": 1}),
+            status=ProcessingStatus.IN_PROGRESS,
+        )
+    )
+    db_session.flush()
+
+    with pytest.raises(IdempotencyInProgress):
+        run_idempotent(
+            db_session, scope="inprogress.recent", idempotency_key="k1", payload={"a": 1},
+            entity_type="widget", work_fn=lambda: pytest.fail("must not run - should still be blocked"),
+            load_existing=lambda entity_id: None,
+        )
+
+
+def test_run_idempotent_recovers_a_stale_in_progress_record_and_allows_retry(db_session):
+    """Regression test for a real production incident: a render request
+    crashed the whole process mid-flight (an out-of-memory kill, per the
+    real logs) after creating an IN_PROGRESS record but before it could
+    ever reach COMPLETED or FAILED - permanently wedging that (scope, key)
+    pair, since nothing else ever transitions it out of IN_PROGRESS. Every
+    retry hit IdempotencyInProgress forever, with no way to recover short
+    of a manual database edit. A record stuck IN_PROGRESS well past any
+    realistic completion time must be treated as abandoned and retried,
+    the same as an explicitly FAILED one."""
+    record = IdempotencyRecord(
+        scope="inprogress.stale", key="k1", request_fingerprint=compute_fingerprint({"a": 1}),
+        status=ProcessingStatus.IN_PROGRESS,
+    )
+    db_session.add(record)
+    db_session.flush()
+    # Simulate a record abandoned well past the recovery threshold - real
+    # crash recovery depends on wall-clock time, not on how this test
+    # constructed the row.
+    record.updated_at = datetime.now(UTC) - STALE_IN_PROGRESS_THRESHOLD - timedelta(minutes=1)
+    db_session.flush()
+
+    entity, created = run_idempotent(
+        db_session, scope="inprogress.stale", idempotency_key="k1", payload={"a": 1},
+        entity_type="widget", work_fn=lambda: _Widget(id=1, value="recovered"),
+        load_existing=lambda entity_id: pytest.fail("should not replay - work_fn must actually run"),
+    )
+    assert created is True
+    assert entity.value == "recovered"
 
 
 def test_get_or_create_record_falls_back_to_winner_on_concurrent_insert_race(db_session):
