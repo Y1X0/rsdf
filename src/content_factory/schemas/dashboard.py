@@ -13,15 +13,34 @@ class DashboardSummaryOut(BaseModel):
 class SettingsStatusOut(BaseModel):
     """Read-only, non-secret provider/environment status for the Settings
     page — mode selectors only (e.g. "groq"), never a key or credential
-    value. Every field mirrors an existing Settings attribute as-is."""
+    value.
+
+    `*_configured` mirrors the raw setting (what an operator set
+    LLM_PROVIDER/etc to); `*_effective` mirrors what's actually being used
+    at runtime, i.e. `Settings.resolved_*_provider()` — which silently
+    falls back to a safe default (e.g. "fake") when the matching API key
+    is missing (config.py's own documented behavior). Showing only the
+    configured value here previously made this page actively misleading:
+    it could read "groq" while the app was really running on the fake,
+    zero-content provider because GROQ_API_KEY was unset. `*_using_fallback`
+    makes that gap impossible to miss instead of requiring the reader to
+    notice the two values differ."""
 
     environment: str
-    llm_provider: str
-    tts_provider: str
+    llm_provider_configured: str
+    llm_provider_effective: str
+    llm_provider_using_fallback: bool
+    tts_provider_configured: str
+    tts_provider_effective: str
+    tts_provider_using_fallback: bool
+    transcription_provider_configured: str
+    transcription_provider_effective: str
+    transcription_provider_using_fallback: bool
+    notification_provider_configured: str
+    notification_provider_effective: str
+    notification_provider_using_fallback: bool
     renderer_backend: str
     clip_renderer_backend: str
-    transcription_provider: str
-    notification_provider: str
     publishing_enabled: bool
     media_backup_enabled: bool
     rate_limit_backend: str

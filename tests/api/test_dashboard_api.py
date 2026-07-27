@@ -34,11 +34,35 @@ def test_dashboard_settings_reports_provider_status_without_secrets(client):
     resp = client.get("/dashboard/settings")
     assert resp.status_code == 200
     body = resp.json()
-    assert body["llm_provider"] in {"anthropic", "groq", "fake"}
+    assert body["llm_provider_configured"] in {"anthropic", "groq", "fake"}
+    assert body["llm_provider_effective"] in {"anthropic", "groq", "fake"}
     assert body["renderer_backend"] in {"template_pillow", "null"}
     assert body["environment"] == "development"
     assert "api_key" not in str(body).lower()
     assert "secret" not in str(body).lower()
+
+
+def test_dashboard_settings_flags_silent_fallback_when_api_key_is_missing(client, monkeypatch):
+    """Regression test for a real bug: this endpoint used to show only the
+    *configured* provider (e.g. "groq"), which stayed "groq" even when
+    config.py's own documented fallback (no API key -> silently use the
+    fake, zero-content provider) had kicked in — making it impossible to
+    tell from this page alone why every pipeline stage was returning
+    empty results. It must now report the truth: what's actually running."""
+    from content_factory.config import get_settings
+
+    monkeypatch.setenv("LLM_PROVIDER", "groq")
+    monkeypatch.setenv("GROQ_API_KEY", "")
+    get_settings.cache_clear()
+    try:
+        resp = client.get("/dashboard/settings")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["llm_provider_configured"] == "groq"
+        assert body["llm_provider_effective"] == "fake"
+        assert body["llm_provider_using_fallback"] is True
+    finally:
+        get_settings.cache_clear()
 
 
 def test_dashboard_settings_requires_authentication(unauthenticated_client):

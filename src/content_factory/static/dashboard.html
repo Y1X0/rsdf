@@ -803,22 +803,39 @@ async function publishVideo() {
 
 /* ---------- Settings ---------- */
 
+function providerRow(label, settings, key) {
+  const configured = settings[key + '_configured'];
+  const effective = settings[key + '_effective'];
+  const fallback = settings[key + '_using_fallback'];
+  if (!fallback) {
+    return `<div class="k">${label}</div><div><span class="pill ${effective === 'fake' || effective === 'null' || effective === 'log' ? 'muted' : 'ok'}">${escapeHtml(effective)}</span></div>`;
+  }
+  return `<div class="k">${label}</div><div>
+    <span class="pill err">يعمل فعليًا كـ: ${escapeHtml(effective)}</span>
+    <div class="sub" style="margin-top:4px">مُعدّ إلى "${escapeHtml(configured)}" لكن لا يوجد مفتاح API صالح — يتراجع النظام تلقائيًا وبصمت إلى "${escapeHtml(effective)}". هذا يفسّر أي نتائج فارغة (0 أفكار، 0 سكريبتات...). أضف المفتاح الصحيح في متغيرات البيئة على Render لتفعيل "${escapeHtml(configured)}" فعليًا.</div>
+  </div>`;
+}
+
 async function renderSettings(view) {
   view.innerHTML = `<div class="card"><div class="sub">جارٍ التحميل...</div></div>`;
   try {
     const [settings, health] = await Promise.all([api('/dashboard/settings'), fetch('/health').then(r => r.json())]);
+    const anyFallback = settings.llm_provider_using_fallback || settings.tts_provider_using_fallback ||
+      settings.transcription_provider_using_fallback || settings.notification_provider_using_fallback;
     view.innerHTML = `
+      ${anyFallback ? '<div class="card" style="border-color:var(--err)"><div class="status-line err">تحذير: مزوّد واحد أو أكثر معدّ لاستخدام مزوّد حقيقي لكنه يعمل فعليًا بمزوّد بديل (fallback) بسبب مفتاح API مفقود — انظر التفاصيل أدناه.</div></div>' : ''}
       <div class="card">
         <h2>حالة مزوّدي الذكاء الاصطناعي والإنتاج</h2>
+        <div class="sub" style="margin-bottom:8px">"الفعلي" هو ما يعمل عليه النظام فعلًا الآن، وقد يختلف عن الإعداد المُدخل إذا كان مفتاح الـ API مفقودًا.</div>
         <div class="kv-grid">
           <div class="k">بيئة التشغيل (environment)</div><div>${escapeHtml(settings.environment)}</div>
-          <div class="k">مزوّد LLM (Research/Script)</div><div><span class="pill ${settings.llm_provider === 'fake' ? 'muted' : 'ok'}">${escapeHtml(settings.llm_provider)}</span></div>
-          <div class="k">مزوّد التفريغ النصي (Transcription)</div><div>${escapeHtml(settings.transcription_provider)}</div>
-          <div class="k">مزوّد الصوت (TTS)</div><div>${escapeHtml(settings.tts_provider)}</div>
+          ${providerRow('مزوّد LLM (Research/Script)', settings, 'llm_provider')}
+          ${providerRow('مزوّد التفريغ النصي (Transcription)', settings, 'transcription_provider')}
+          ${providerRow('مزوّد الصوت (TTS)', settings, 'tts_provider')}
           <div class="k">محرك إنتاج الفيديو</div><div><span class="pill ${settings.renderer_backend === 'null' ? 'muted' : 'ok'}">${escapeHtml(settings.renderer_backend)}</span></div>
           <div class="k">محرك قصّ المقاطع (Clip renderer)</div><div>${escapeHtml(settings.clip_renderer_backend)}</div>
           <div class="k">النشر مفعّل (kill-switch)</div><div>${settings.publishing_enabled ? 'نعم' : 'لا — معطّل حاليًا'}</div>
-          <div class="k">مزوّد الإشعارات</div><div>${escapeHtml(settings.notification_provider)}</div>
+          ${providerRow('مزوّد الإشعارات', settings, 'notification_provider')}
           <div class="k">نسخ احتياطي للوسائط</div><div>${settings.media_backup_enabled ? 'مفعّل' : 'غير مفعّل'}</div>
           <div class="k">حد المعدل (rate limit backend)</div><div>${escapeHtml(settings.rate_limit_backend)}</div>
         </div>

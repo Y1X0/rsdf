@@ -28,14 +28,26 @@ def dashboard_summary(
 def dashboard_settings(
     settings: Settings = Depends(get_settings), _principal: dict = Depends(require_auth)
 ) -> SettingsStatusOut:
+    llm_effective = settings.resolved_llm_provider()
+    tts_effective = settings.resolved_tts_provider()
+    transcription_effective = settings.resolved_transcription_provider()
+    notification_effective = settings.resolved_notification_provider()
     return SettingsStatusOut(
         environment=settings.environment,
-        llm_provider=settings.llm_provider,
-        tts_provider=settings.tts_provider,
+        llm_provider_configured=settings.llm_provider,
+        llm_provider_effective=llm_effective,
+        llm_provider_using_fallback=llm_effective != settings.llm_provider,
+        tts_provider_configured=settings.tts_provider,
+        tts_provider_effective=tts_effective,
+        tts_provider_using_fallback=tts_effective != settings.tts_provider,
+        transcription_provider_configured=settings.transcription_provider,
+        transcription_provider_effective=transcription_effective,
+        transcription_provider_using_fallback=transcription_effective != settings.transcription_provider,
+        notification_provider_configured=settings.notification_provider,
+        notification_provider_effective=notification_effective,
+        notification_provider_using_fallback=notification_effective != settings.notification_provider,
         renderer_backend=settings.renderer_backend,
         clip_renderer_backend=settings.clip_renderer_backend,
-        transcription_provider=settings.transcription_provider,
-        notification_provider=settings.notification_provider,
         publishing_enabled=settings.publishing_enabled,
         media_backup_enabled=settings.media_backup_enabled,
         rate_limit_backend=settings.rate_limit_backend,
