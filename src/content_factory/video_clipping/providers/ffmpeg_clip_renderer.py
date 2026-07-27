@@ -20,6 +20,19 @@ drawtext filter string: this bundled ffmpeg build does not include the
 `drawtext` filter at all (confirmed via `ffmpeg -filters`), only
 `subtitles`/`ass` (libass) — using a real subtitle file sidesteps
 drawtext's filter-string escaping entirely as a side benefit.
+
+Captions prefer word-level timing (`request.transcript_words`) over
+segment-level (`request.transcript_segments`) when both are available:
+a segment is typically a whole sentence, several seconds long, so
+captioning at segment granularity shows a wall of text for its entire
+window rather than text appearing in sync with what's actually being
+said at that instant. Word-level cues are grouped a few words at a time
+using each word's own real start/end time, which is what actually puts
+text on screen "at the same time the person is speaking" rather than a
+whole sentence early or late relative to the audio. Falls back to
+segment-level whenever word-level timing isn't available (an older
+transcript, or a transcription provider that couldn't supply it) - never
+a hard requirement.
 """
 
 import subprocess
@@ -27,7 +40,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from content_factory.transcription.base import TranscriptSegment
+from content_factory.transcription.base import TranscriptSegment, TranscriptWord
 from content_factory.video_clipping.base import ClipRenderer, ClipRenderRequest, ClipRenderResult
 
 # 9:16 short-form. Matches TemplatePillowRenderer's own reduced size and
@@ -39,6 +52,19 @@ from content_factory.video_clipping.base import ClipRenderer, ClipRenderRequest,
 _FRAME_SIZE = (540, 960)
 _HOOK_DURATION_S = 3.0
 
+# Word-grouping for tightly-synced captions: break a cue early on a
+# natural pause between words (a real gap in the word-level timing, not
+# a guess) or after this many words, whichever comes first. Small enough
+# to read comfortably on a 9:16 frame while staying close to real-time.
+_MAX_WORDS_PER_CUE = 4
+_WORD_PAUSE_BREAK_S = 0.6
+# Real Whisper timestamps are floats with the usual binary-floating-point
+# representation noise (e.g. 2.0 - 1.4 == 0.6000000000000001, not exactly
+# 0.6) - without this tolerance, a gap that's genuinely "exactly at the
+# threshold" could non-deterministically trigger a break depending on
+# which side of that noise it lands on.
+_PAUSE_EPSILON_S = 1e-6
+
 
 def _format_srt_timestamp(seconds: float) -> str:
     seconds = max(seconds, 0.0)
@@ -48,18 +74,65 @@ def _format_srt_timestamp(seconds: float) -> str:
     return f"{int(hours):02d}:{int(minutes):02d}:{int(secs):02d},{millis:03d}"
 
 
-def _build_srt(*, hook_text: str | None, segments: list[TranscriptSegment], start_s: float, end_s: float) -> str:
+def _group_words_into_cues(words: list[TranscriptWord]) -> list[tuple[float, float, str]]:
+    """`words` must already be clip-relative (0-based) timing. Groups
+    consecutive words into short cues using their own real start/end
+    times - the cue's start/end is the first/last word's own timing, not
+    an estimate."""
     cues: list[tuple[float, float, str]] = []
+    current: list[TranscriptWord] = []
+    for w in words:
+        if current and (
+            w.start_s - current[-1].end_s > _WORD_PAUSE_BREAK_S + _PAUSE_EPSILON_S
+            or len(current) >= _MAX_WORDS_PER_CUE
+        ):
+            cues.append((current[0].start_s, current[-1].end_s, " ".join(x.word for x in current)))
+            current = []
+        current.append(w)
+    if current:
+        cues.append((current[0].start_s, current[-1].end_s, " ".join(x.word for x in current)))
+    return cues
+
+
+def _build_srt(
+    *,
+    hook_text: str | None,
+    segments: list[TranscriptSegment],
+    words: list[TranscriptWord],
+    start_s: float,
+    end_s: float,
+) -> str:
+    cues: list[tuple[float, float, str]] = []
+    hook_end_s = 0.0
     if hook_text:
-        cues.append((0.0, min(_HOOK_DURATION_S, end_s - start_s), hook_text))
-    for seg in segments:
-        # Only segments that actually overlap this clip's own [start_s, end_s]
-        # window, shifted onto the clip's own 0-based timeline.
-        overlap_start = max(seg.start_s, start_s)
-        overlap_end = min(seg.end_s, end_s)
-        if overlap_end <= overlap_start:
-            continue
-        cues.append((overlap_start - start_s, overlap_end - start_s, seg.text))
+        hook_end_s = min(_HOOK_DURATION_S, end_s - start_s)
+        cues.append((0.0, hook_end_s, hook_text))
+
+    # Only words that actually overlap this clip's own [start_s, end_s]
+    # window, shifted onto the clip's own 0-based timeline - and never
+    # starting before the hook cue ends, so the two never visually overlap.
+    overlapping_words = [
+        TranscriptWord(start_s=max(w.start_s, start_s) - start_s, end_s=min(w.end_s, end_s) - start_s, word=w.word)
+        for w in words
+        if min(w.end_s, end_s) > max(w.start_s, start_s)
+    ]
+    overlapping_words = [w for w in overlapping_words if w.start_s >= hook_end_s]
+
+    if overlapping_words:
+        cues.extend(_group_words_into_cues(overlapping_words))
+    else:
+        # No word-level timing available for this clip - fall back to
+        # segment-level captions exactly as before word-level existed.
+        for seg in segments:
+            overlap_start = max(seg.start_s, start_s)
+            overlap_end = min(seg.end_s, end_s)
+            if overlap_end <= overlap_start:
+                continue
+            seg_rel_start = max(overlap_start - start_s, hook_end_s)
+            seg_rel_end = overlap_end - start_s
+            if seg_rel_end <= seg_rel_start:
+                continue
+            cues.append((seg_rel_start, seg_rel_end, seg.text))
 
     lines = []
     for i, (rel_start, rel_end, text) in enumerate(cues, start=1):
@@ -95,6 +168,7 @@ class FfmpegClipRenderer(ClipRenderer):
         srt_content = _build_srt(
             hook_text=request.hook_text,
             segments=request.transcript_segments,
+            words=request.transcript_words,
             start_s=request.start_s,
             end_s=request.end_s,
         )

@@ -9,7 +9,7 @@ configuration.
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
-from content_factory.transcription.base import TranscriptSegment
+from content_factory.transcription.base import TranscriptSegment, TranscriptWord
 
 
 @dataclass(frozen=True)
@@ -20,6 +20,13 @@ class ClipRenderRequest:
     end_s: float
     hook_text: str | None
     transcript_segments: list[TranscriptSegment] = field(default_factory=list)
+    # Optional, finer-grained alternative to transcript_segments - when
+    # present, a renderer can burn captions synced to each word's own
+    # timing instead of showing a whole segment's text for its entire
+    # (often several-second) window. Empty by default so every existing
+    # caller/renderer that doesn't know about this yet keeps working
+    # unchanged on segment-level timing.
+    transcript_words: list[TranscriptWord] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

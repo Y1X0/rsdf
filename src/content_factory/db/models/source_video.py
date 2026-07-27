@@ -18,6 +18,15 @@ class SourceVideo(TimestampMixin, Base):
     ClipSelectionAgent to pick moments — kept as JSON rather than a
     separate table since it's always read/written as one whole unit per
     source video, never queried by individual segment.
+
+    `transcript_words` is the same idea at word granularity
+    (`[{"start": float, "end": float, "word": str}, ...]`), used by
+    ClipRenderer to burn captions tightly synced to the moment each word
+    is actually spoken rather than showing a whole multi-second segment's
+    text all at once. Optional (nullable, defaults empty on read): a
+    provider that can't supply word-level timing, or a video transcribed
+    before this existed, simply has none — callers fall back to
+    segment-level captions, never a hard requirement.
     """
 
     __tablename__ = "source_videos"
@@ -34,6 +43,7 @@ class SourceVideo(TimestampMixin, Base):
     )
     transcript_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     transcript_segments: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    transcript_words: Mapped[list | None] = mapped_column(JSON, nullable=True)
     transcription_agent_run_id: Mapped[int | None] = mapped_column(
         ForeignKey("agent_runs.id"), nullable=True
     )

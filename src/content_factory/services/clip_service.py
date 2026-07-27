@@ -26,7 +26,7 @@ from content_factory.db.models.source_video import SourceVideo
 from content_factory.db.models.video import Video
 from content_factory.llm.base import LLMClient
 from content_factory.logging_config import get_logger
-from content_factory.transcription.base import TranscriptionProvider, TranscriptSegment
+from content_factory.transcription.base import TranscriptionProvider, TranscriptSegment, TranscriptWord
 from content_factory.video_clipping.base import ClipRenderer, ClipRenderRequest
 
 logger = get_logger(__name__)
@@ -76,6 +76,9 @@ def transcribe_source_video(
         source_video.transcript_text = result.text
         source_video.transcript_segments = [
             {"start": s.start_s, "end": s.end_s, "text": s.text} for s in result.segments
+        ]
+        source_video.transcript_words = [
+            {"start": w.start_s, "end": w.end_s, "word": w.word} for w in result.words
         ]
         if result.duration_s:
             source_video.duration_s = result.duration_s
@@ -164,6 +167,10 @@ def render_clip(db: Session, *, clip: Clip, source_video: SourceVideo, clip_rend
         TranscriptSegment(start_s=s["start"], end_s=s["end"], text=s["text"])
         for s in (source_video.transcript_segments or [])
     ]
+    words = [
+        TranscriptWord(start_s=w["start"], end_s=w["end"], word=w["word"])
+        for w in (source_video.transcript_words or [])
+    ]
 
     try:
         with agent_run(
@@ -182,6 +189,7 @@ def render_clip(db: Session, *, clip: Clip, source_video: SourceVideo, clip_rend
                 end_s=clip.end_s,
                 hook_text=clip.hook_text,
                 transcript_segments=segments,
+                transcript_words=words,
             )
             result = clip_renderer.render(request)
             handle.record_output(

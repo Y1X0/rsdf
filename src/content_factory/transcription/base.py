@@ -16,9 +16,26 @@ class TranscriptSegment:
 
 
 @dataclass(frozen=True)
+class TranscriptWord:
+    """Word-level timing, finer-grained than TranscriptSegment (a segment
+    is typically a whole sentence/phrase, several seconds long). Lets a
+    caption renderer put text on screen in close sync with the exact
+    moment each word is actually spoken, rather than showing a whole
+    sentence for its entire multi-second segment window. Optional: a
+    provider that can't supply it (or a source video transcribed before
+    this existed) leaves `TranscriptionResult.words` empty, and callers
+    fall back to segment-level timing - never a hard requirement."""
+
+    start_s: float
+    end_s: float
+    word: str
+
+
+@dataclass(frozen=True)
 class TranscriptionResult:
     text: str
     segments: list[TranscriptSegment] = field(default_factory=list)
+    words: list[TranscriptWord] = field(default_factory=list)
     provider: str = "null"
     model: str = "null"
     duration_s: float | None = None
