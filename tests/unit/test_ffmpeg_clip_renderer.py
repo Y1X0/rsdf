@@ -112,6 +112,74 @@ def test_render_without_hook_or_segments_still_produces_a_real_file(tmp_path, sa
     assert result.duration_s == 3.0
 
 
+@pytest.fixture(scope="module")
+def black_background_video(tmp_path_factory):
+    """A plain black source, unlike `sample_video`'s colorful test
+    pattern - needed so a pixel-brightness check against the rendered
+    output can only be measuring caption text, never the source
+    content itself (a colorful pattern can legitimately touch the
+    frame's own edges after scale/pad, which isn't the thing under
+    test here)."""
+    path = tmp_path_factory.mktemp("black_bg_test") / "black.mp4"
+    ffmpeg_bin = imageio_ffmpeg.get_ffmpeg_exe()
+    subprocess.run(
+        [
+            ffmpeg_bin, "-y",
+            "-f", "lavfi", "-i", "color=c=black:size=320x240:rate=10:duration=4",
+            "-f", "lavfi", "-i", "sine=frequency=440:duration=4",
+            "-pix_fmt", "yuv420p", "-shortest", str(path),
+        ],
+        check=True, capture_output=True,
+    )
+    return path
+
+
+def test_long_hook_text_wraps_instead_of_overflowing_the_frame_edge(tmp_path, black_background_video):
+    """Regression test for a real bug found rendering a real user-supplied
+    video: the ASS header's WrapStyle was set to 2 (no word wrapping),
+    which let a long hook line run off the right edge of the frame
+    instead of wrapping to a second line - confirmed visually (a real
+    screenshot showed "Real Camera Footage Test" cut off mid-word).
+    Fixed by using WrapStyle 0 (libass's own default, smart wrapping).
+
+    This checks the actual rendered pixels (not just the ASS source
+    text) for exactly the failure mode observed: no bright (text)
+    pixel should reach the frame's rightmost column when the line is
+    long enough that WrapStyle 2 would have pushed it there."""
+    from pathlib import Path
+
+    from PIL import Image
+
+    renderer = FfmpegClipRenderer(storage_dir=tmp_path / "clips")
+    long_hook = "This Hook Text Is Long Enough To Definitely Require Word Wrapping"
+    request = ClipRenderRequest(
+        clip_id=6,
+        source_path=str(black_background_video),
+        start_s=0.0,
+        end_s=4.0,
+        hook_text=long_hook,
+        transcript_segments=[],
+    )
+
+    result = renderer.render(request)
+
+    ffmpeg_bin = imageio_ffmpeg.get_ffmpeg_exe()
+    frame_path = Path(tmp_path) / "hook_frame.png"
+    subprocess.run(
+        [ffmpeg_bin, "-y", "-ss", "0.5", "-i", result.asset_url, "-frames:v", "1", "-update", "1", str(frame_path)],
+        check=True, capture_output=True,
+    )
+
+    frame = Image.open(frame_path).convert("L")
+    width, height = frame.size
+    assert (width, height) == _FRAME_SIZE
+    rightmost_column = [frame.getpixel((width - 1, y)) for y in range(height)]
+    assert max(rightmost_column) < 128, (
+        "a bright pixel reached the frame's rightmost column - the long hook "
+        "line likely overflowed instead of wrapping"
+    )
+
+
 def test_render_raises_on_invalid_range(tmp_path, sample_video):
     renderer = FfmpegClipRenderer(storage_dir=tmp_path / "clips")
     request = ClipRenderRequest(
