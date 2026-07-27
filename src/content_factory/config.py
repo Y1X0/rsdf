@@ -53,6 +53,15 @@ class Settings(BaseSettings):
     # "rendering" extra: pip install '.[rendering]', same imageio-ffmpeg
     # bundled binary TemplatePillowRenderer already uses).
     clip_renderer_backend: str = "null"  # "ffmpeg" | "null"
+    # Speaker diarization ("who is talking, and when"): "null" (default)
+    # assumes a single speaker for the whole clip - zero dependencies, and
+    # the correct choice for this app's current free-tier hosting reality
+    # (see diarization/providers/pyannote_provider.py's docstring for the
+    # measured reasoning). "pyannote" is a real, much heavier provider -
+    # meant for a deployment with real memory/CPU headroom, opted into
+    # explicitly, never a default anyone gets by accident.
+    diarization_provider: str = "null"  # "pyannote" | "null"
+    huggingface_token: str = ""
 
     # --- Auth (v1.1, PHASE1_AUDIT.md F2) ---
     # No user database in Phase 1 — a small, fixed set of pre-shared service
@@ -163,6 +172,11 @@ class Settings(BaseSettings):
         if self.transcription_provider == "groq" and not self.groq_api_key:
             return "null"
         return self.transcription_provider
+
+    def resolved_diarization_provider(self) -> str:
+        if self.diarization_provider == "pyannote" and not self.huggingface_token:
+            return "null"
+        return self.diarization_provider
 
     def resolved_notification_provider(self) -> str:
         if self.notification_provider == "slack" and not self.slack_webhook_url:

@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from content_factory.api.deps import (
     get_clip_renderer,
     get_db,
+    get_diarization_provider,
     get_llm_client,
     get_notification_provider,
     get_transcription_provider,
@@ -27,6 +28,7 @@ from content_factory.db.models.campaign import Campaign
 from content_factory.db.models.clip import Clip
 from content_factory.db.models.source_video import SourceVideo
 from content_factory.db.models.video import Video
+from content_factory.diarization.base import SpeakerDiarizationProvider
 from content_factory.llm.base import LLMClient
 from content_factory.logging_config import get_logger
 from content_factory.schemas.clip import ClipOut, ClipRenderRequestBody
@@ -128,6 +130,7 @@ def transcribe_source_video(
     payload: TranscribeRequest,
     db: Session = Depends(get_db),
     transcription_provider: TranscriptionProvider = Depends(get_transcription_provider),
+    diarization_provider: SpeakerDiarizationProvider = Depends(get_diarization_provider),
     notification_provider=Depends(get_notification_provider),
     _principal: dict = Depends(require_operator),
 ) -> SourceVideoOut:
@@ -138,7 +141,10 @@ def transcribe_source_video(
         notification_provider=notification_provider,
     )
     clip_service.transcribe_source_video(
-        db, source_video=source_video, transcription_provider=transcription_provider
+        db,
+        source_video=source_video,
+        transcription_provider=transcription_provider,
+        diarization_provider=diarization_provider,
     )
     return SourceVideoOut.model_validate(source_video)
 

@@ -9,6 +9,7 @@ configuration.
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
+from content_factory.diarization.base import SpeakerTurn
 from content_factory.transcription.base import TranscriptSegment, TranscriptWord
 
 
@@ -27,6 +28,12 @@ class ClipRenderRequest:
     # caller/renderer that doesn't know about this yet keeps working
     # unchanged on segment-level timing.
     transcript_words: list[TranscriptWord] = field(default_factory=list)
+    # Optional: who is talking during each stretch, from a real (optional,
+    # off-by-default) diarization provider. Empty by default - a renderer
+    # that doesn't use this (or a clip with no diarization data available)
+    # simply renders every caption in one consistent style, exactly as
+    # before this field existed.
+    speaker_turns: list[SpeakerTurn] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

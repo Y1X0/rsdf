@@ -59,6 +59,16 @@ publishing = [
 redis = [
     "redis>=5.0",
 ]
+# Optional real speaker diarization backend (pyannote.audio, PyTorch-based).
+# Deliberately NOT part of the `production` bundle below and NOT installed
+# by the Dockerfile by default - see diarization/providers/pyannote_provider.py's
+# docstring for why this is a real, meaningfully heavier resource cost than
+# every other optional integration in this file. Without this extra
+# installed, DIARIZATION_PROVIDER=pyannote falls back to NullDiarizationProvider
+# (see diarization/factory.py) - never a hard import-time failure.
+diarization = [
+    "pyannote.audio>=3.1",
+]
 # Production Hardening Sprint (H3): optional S3 backup copy of rendered
 # media. Without this extra installed, MEDIA_BACKUP_ENABLED=true falls back
 # to NullMediaBackupProvider with a logged warning (see services/media_backup.py).

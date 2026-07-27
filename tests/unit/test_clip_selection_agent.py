@@ -69,6 +69,38 @@ def test_select_clips_returns_empty_list_on_unparseable_response(db_session):
     assert clips == []
 
 
+def test_select_clips_snaps_boundaries_onto_a_nearby_real_scene_change(db_session):
+    """A clip boundary suggested by the LLM close to (but not exactly on)
+    a real detected scene cut should be pulled onto that cut, so the
+    rendered clip doesn't start/end mid-shot."""
+    canned = [{"start_s": 2.3, "end_s": 9.4, "hook_text": "hook", "predicted_score": 0.8, "reason": "n/a"}]
+    llm = FakeLLMClient(response_builder=lambda system, prompt: json.dumps(canned))
+    agent = ClipSelectionAgent(llm)
+    source_video = _source_video(db_session)
+
+    clips = agent.select_clips(
+        db_session, source_video=source_video, segments=_segments(), max_clips=5, scene_changes=[2.0, 9.5]
+    )
+
+    assert len(clips) == 1
+    assert clips[0].start_s == 2.0
+    assert clips[0].end_s == 9.5
+
+
+def test_select_clips_leaves_boundaries_untouched_when_no_scene_change_is_close(db_session):
+    canned = [{"start_s": 2.0, "end_s": 8.0, "hook_text": "hook", "predicted_score": 0.8, "reason": "n/a"}]
+    llm = FakeLLMClient(response_builder=lambda system, prompt: json.dumps(canned))
+    agent = ClipSelectionAgent(llm)
+    source_video = _source_video(db_session)
+
+    clips = agent.select_clips(
+        db_session, source_video=source_video, segments=_segments(), max_clips=5, scene_changes=[19.9]
+    )
+
+    assert clips[0].start_s == 2.0
+    assert clips[0].end_s == 8.0
+
+
 def test_select_clips_marks_agent_run_failed_and_reraises_on_error(db_session):
     def _boom(system, prompt):
         raise RuntimeError("provider unavailable")

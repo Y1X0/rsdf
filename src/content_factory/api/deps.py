@@ -17,6 +17,8 @@ from content_factory.auth.rate_limiter import RateLimiter
 from content_factory.auth.rate_limiter_factory import get_auth_rate_limiter as _build_auth_rate_limiter
 from content_factory.config import get_settings
 from content_factory.db.base import SessionLocal
+from content_factory.diarization.base import SpeakerDiarizationProvider
+from content_factory.diarization.factory import get_diarization_provider as _build_diarization_provider
 from content_factory.llm.base import LLMClient
 from content_factory.llm.factory import get_llm_client as _build_llm_client
 from content_factory.notifications.base import NotificationProvider
@@ -118,3 +120,12 @@ def get_transcription_provider() -> TranscriptionProvider:
 
 def get_clip_renderer() -> ClipRenderer:
     return _clip_renderer_singleton()
+
+
+@lru_cache
+def _diarization_provider_singleton() -> SpeakerDiarizationProvider:
+    return _build_diarization_provider(get_settings())
+
+
+def get_diarization_provider() -> SpeakerDiarizationProvider:
+    return _diarization_provider_singleton()

@@ -14,14 +14,24 @@ import pytest
 
 imageio_ffmpeg = pytest.importorskip("imageio_ffmpeg")
 
+import re
+
+from content_factory.diarization.base import SpeakerTurn  # noqa: E402
 from content_factory.transcription.base import TranscriptSegment, TranscriptWord  # noqa: E402
 from content_factory.video_clipping.base import ClipRenderRequest  # noqa: E402
 from content_factory.video_clipping.providers.ffmpeg_clip_renderer import (  # noqa: E402
     _FRAME_SIZE,
     FfmpegClipRenderer,
-    _build_srt,
+    _build_captions,
     _group_words_into_cues,
 )
+
+
+def _strip_ass_tags(text: str) -> str:
+    """Test helper only: strips ASS override tags (e.g. `{\\k40}`) so
+    assertions can check the underlying spoken words without being
+    coupled to the exact karaoke-tag values."""
+    return re.sub(r"\{[^}]*\}", "", text)
 
 
 def _ffprobe_dimensions(ffmpeg_bin, path) -> tuple[int, int]:
@@ -188,11 +198,11 @@ class TestGroupWordsIntoCues:
         assert cues[1] == (2.6, 3.2, "new phrase")
 
 
-class TestBuildSrt:
-    """Pure-function tests for _build_srt's timing/precedence logic."""
+class TestBuildCaptions:
+    """Pure-function tests for _build_captions's timing/precedence logic."""
 
     def test_prefers_word_level_timing_over_segments_when_both_given(self):
-        srt = _build_srt(
+        ass = _build_captions(
             hook_text=None,
             segments=[TranscriptSegment(start_s=0.0, end_s=5.0, text="a whole long segment of text")],
             words=[
@@ -200,24 +210,32 @@ class TestBuildSrt:
                 TranscriptWord(start_s=0.4, end_s=0.8, word="real"),
                 TranscriptWord(start_s=0.8, end_s=1.2, word="word"),
             ],
+            speaker_turns=[],
             start_s=0.0,
             end_s=5.0,
         )
-        assert "a real word" in srt
-        assert "a whole long segment of text" not in srt
+        assert "a real word" in _strip_ass_tags(ass)
+        assert "a whole long segment of text" not in ass
+        # The whole point of switching to ASS: each word carries its own
+        # \k karaoke timing tag rather than being a plain static line.
+        assert ass.count(r"\k") == 3
 
     def test_falls_back_to_segments_when_no_words_available(self):
-        srt = _build_srt(
+        ass = _build_captions(
             hook_text=None,
             segments=[TranscriptSegment(start_s=0.0, end_s=5.0, text="segment-level caption")],
             words=[],
+            speaker_turns=[],
             start_s=0.0,
             end_s=5.0,
         )
-        assert "segment-level caption" in srt
+        assert "segment-level caption" in ass
+        # Fallback (no word timing) has nothing to key a karaoke sweep off,
+        # so it stays a plain line - no \k tags at all.
+        assert r"\k" not in ass
 
     def test_word_level_cues_never_start_before_the_hook_cue_ends(self):
-        srt = _build_srt(
+        ass = _build_captions(
             hook_text="A punchy hook",
             segments=[],
             words=[
@@ -226,15 +244,17 @@ class TestBuildSrt:
                 TranscriptWord(start_s=4.0, end_s=4.5, word="after"),
                 TranscriptWord(start_s=4.5, end_s=5.0, word="hook"),
             ],
+            speaker_turns=[],
             start_s=0.0,
             end_s=6.0,
         )
-        assert "during hook" not in srt
-        assert "after hook" in srt
-        assert "A punchy hook" in srt
+        stripped = _strip_ass_tags(ass)
+        assert "during hook" not in stripped
+        assert "after hook" in stripped
+        assert "A punchy hook" in stripped
 
     def test_only_includes_words_overlapping_the_requested_clip_range(self):
-        srt = _build_srt(
+        ass = _build_captions(
             hook_text=None,
             segments=[],
             words=[
@@ -242,9 +262,121 @@ class TestBuildSrt:
                 TranscriptWord(start_s=10.0, end_s=10.5, word="inside"),
                 TranscriptWord(start_s=30.0, end_s=30.5, word="after"),
             ],
+            speaker_turns=[],
             start_s=9.0,
             end_s=15.0,
         )
-        assert "inside" in srt
-        assert "before" not in srt
-        assert "after" not in srt
+        assert "inside" in ass
+        assert "before" not in ass
+        assert "after" not in ass
+
+    def test_karaoke_word_durations_follow_each_words_own_timing(self):
+        """The \\k duration for each word (in centiseconds) should reflect
+        real word-to-word timing, not an even split - the last word's
+        duration is its own end-start, and earlier words extend until the
+        next word begins (absorbing any small gap between them)."""
+        ass = _build_captions(
+            hook_text=None,
+            segments=[],
+            words=[
+                TranscriptWord(start_s=0.0, end_s=0.3, word="one"),
+                TranscriptWord(start_s=0.5, end_s=0.9, word="two"),
+            ],
+            speaker_turns=[],
+            start_s=0.0,
+            end_s=5.0,
+        )
+        # "one" runs from 0.0 until "two" starts at 0.5 -> 50 centiseconds.
+        assert r"{\k50}one" in ass
+        # "two" is the last word in its group -> its own 0.4s duration.
+        assert r"{\k40}two" in ass
+
+    def test_uses_default_style_when_only_one_speaker_is_present(self):
+        """A single-speaker recording (the overwhelmingly common case, and
+        what every clip looked like before diarization existed) must
+        render identically to having no diarization data at all - no
+        per-speaker style lines used."""
+        ass = _build_captions(
+            hook_text=None,
+            segments=[],
+            words=[TranscriptWord(start_s=1.0, end_s=1.5, word="hi")],
+            speaker_turns=[SpeakerTurn(start_s=0.0, end_s=5.0, speaker_label="SPEAKER_00")],
+            start_s=0.0,
+            end_s=5.0,
+        )
+        assert "Default,,0,0,0,," in ass
+        assert "Speaker0,,0,0,0,," not in ass
+
+    def test_assigns_distinct_styles_to_distinct_speakers(self):
+        """Two real speakers overlapping the clip's own word groups should
+        end up on two distinct named styles, in first-seen order - not
+        all forced onto Default, and not sharing one style."""
+        ass = _build_captions(
+            hook_text=None,
+            segments=[],
+            words=[
+                TranscriptWord(start_s=0.0, end_s=0.5, word="first"),
+                TranscriptWord(start_s=0.5, end_s=1.0, word="speaker"),
+                # A real pause forces this into its own cue, so it gets its
+                # own dominant-speaker lookup rather than being absorbed
+                # into the first group.
+                TranscriptWord(start_s=3.0, end_s=3.5, word="second"),
+                TranscriptWord(start_s=3.5, end_s=4.0, word="speaker"),
+            ],
+            speaker_turns=[
+                SpeakerTurn(start_s=0.0, end_s=1.0, speaker_label="SPEAKER_00"),
+                SpeakerTurn(start_s=3.0, end_s=4.0, speaker_label="SPEAKER_01"),
+            ],
+            start_s=0.0,
+            end_s=5.0,
+        )
+        assert "Speaker0,,0,0,0,," in ass
+        assert "Speaker1,,0,0,0,," in ass
+
+    def test_hook_stays_on_default_style_even_with_multiple_speakers(self):
+        ass = _build_captions(
+            hook_text="A punchy hook",
+            segments=[],
+            words=[
+                TranscriptWord(start_s=4.0, end_s=4.5, word="first"),
+                TranscriptWord(start_s=8.0, end_s=8.5, word="second"),
+            ],
+            speaker_turns=[
+                SpeakerTurn(start_s=4.0, end_s=4.5, speaker_label="SPEAKER_00"),
+                SpeakerTurn(start_s=8.0, end_s=8.5, speaker_label="SPEAKER_01"),
+            ],
+            start_s=0.0,
+            end_s=10.0,
+        )
+        hook_line = next(line for line in ass.splitlines() if "A punchy hook" in line)
+        assert hook_line.startswith("Dialogue: 0,")
+        assert ",Default,,0,0,0,," in hook_line
+
+
+def test_render_with_multi_speaker_diarization_still_produces_a_real_file(tmp_path, sample_video):
+    """End-to-end smoke test for the per-speaker caption styling path -
+    real ffmpeg, a real .ass file with more than one Style block, real
+    file out."""
+    renderer = FfmpegClipRenderer(storage_dir=tmp_path / "clips")
+    request = ClipRenderRequest(
+        clip_id=5,
+        source_path=str(sample_video),
+        start_s=2.0,
+        end_s=6.0,
+        hook_text=None,
+        transcript_words=[
+            TranscriptWord(start_s=2.0, end_s=2.3, word="hello"),
+            TranscriptWord(start_s=5.0, end_s=5.3, word="hi"),
+        ],
+        speaker_turns=[
+            SpeakerTurn(start_s=2.0, end_s=2.3, speaker_label="SPEAKER_00"),
+            SpeakerTurn(start_s=5.0, end_s=5.3, speaker_label="SPEAKER_01"),
+        ],
+    )
+
+    result = renderer.render(request)
+
+    from pathlib import Path
+
+    assert Path(result.asset_url).exists()
+    assert Path(result.asset_url).stat().st_size > 0

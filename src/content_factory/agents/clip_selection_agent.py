@@ -15,6 +15,7 @@ from content_factory.db.models.source_video import SourceVideo
 from content_factory.llm.base import LLMClient
 from content_factory.logging_config import get_logger
 from content_factory.transcription.base import TranscriptSegment
+from content_factory.video_clipping.scene_detection import snap_to_nearest_scene_change
 
 logger = get_logger(__name__)
 
@@ -52,9 +53,11 @@ class ClipSelectionAgent:
         source_video: SourceVideo,
         segments: list[TranscriptSegment],
         max_clips: int = 5,
+        scene_changes: list[float] | None = None,
     ) -> list[Clip]:
         log = logger.bind(source_video_id=source_video.id)
         log.info("clip_selection_agent_started", segment_count=len(segments), max_clips=max_clips)
+        scene_changes = scene_changes or []
 
         prompt = self._build_prompt(segments=segments, max_clips=max_clips)
 
@@ -96,6 +99,17 @@ class ClipSelectionAgent:
                 # against the ffmpeg renderer.
                 if start_s < 0 or end_s <= start_s or (max_end and end_s > max_end + 1.0):
                     continue
+                if scene_changes:
+                    # Pull the LLM's suggested boundaries onto a real
+                    # visual cut when one is close by, so the rendered
+                    # clip doesn't start/end mid-shot - purely a
+                    # refinement of the LLM's own choice, never a
+                    # requirement (falls back to the LLM's exact
+                    # timestamps whenever no nearby cut exists).
+                    snapped_start = snap_to_nearest_scene_change(start_s, scene_changes)
+                    snapped_end = snap_to_nearest_scene_change(end_s, scene_changes)
+                    if snapped_end > snapped_start:
+                        start_s, end_s = snapped_start, snapped_end
                 clip = Clip(
                     source_video_id=source_video.id,
                     start_s=start_s,

@@ -3,6 +3,7 @@ import json
 import pytest
 
 from content_factory.db.models.enums import ClipStatus, ProcessingStatus, VideoStatus
+from content_factory.diarization.base import DiarizationResult, SpeakerTurn
 from content_factory.llm.providers.fake_provider import FakeLLMClient
 from content_factory.services import clip_service
 from content_factory.transcription.base import TranscriptionResult, TranscriptSegment, TranscriptWord
@@ -16,6 +17,19 @@ class _FakeTranscriptionProvider:
 
     def transcribe(self, audio_path: str) -> TranscriptionResult:
         return self._result
+
+
+class _FakeDiarizationProvider:
+    def __init__(self, result: DiarizationResult) -> None:
+        self._result = result
+
+    def diarize(self, audio_path: str) -> DiarizationResult:
+        return self._result
+
+
+class _BoomDiarizationProvider:
+    def diarize(self, audio_path: str) -> DiarizationResult:
+        raise RuntimeError("diarization model unavailable")
 
 
 def test_register_source_video_creates_row(db_session):
@@ -69,6 +83,63 @@ def test_transcribe_source_video_marks_failed_on_error(db_session):
     with pytest.raises(RuntimeError):
         clip_service.transcribe_source_video(db_session, source_video=source_video, transcription_provider=_BoomProvider())
     assert source_video.transcription_status == ProcessingStatus.FAILED
+
+
+def test_transcribe_source_video_stores_diarization_result_when_provider_given(db_session):
+    source_video = clip_service.register_source_video(
+        db_session, campaign_id=None, title="My Video", storage_path="/tmp/x.mp4"
+    )
+    transcription_provider = _FakeTranscriptionProvider(TranscriptionResult(text="hi", provider="fake", model="fake"))
+    diarization_provider = _FakeDiarizationProvider(
+        DiarizationResult(
+            turns=[
+                SpeakerTurn(start_s=0.0, end_s=2.0, speaker_label="SPEAKER_00"),
+                SpeakerTurn(start_s=2.0, end_s=4.0, speaker_label="SPEAKER_01"),
+            ],
+            speaker_count=2,
+            provider="pyannote",
+        )
+    )
+
+    result = clip_service.transcribe_source_video(
+        db_session,
+        source_video=source_video,
+        transcription_provider=transcription_provider,
+        diarization_provider=diarization_provider,
+    )
+
+    assert result.speaker_turns == [
+        {"start": 0.0, "end": 2.0, "speaker": "SPEAKER_00"},
+        {"start": 2.0, "end": 4.0, "speaker": "SPEAKER_01"},
+    ]
+
+
+def test_transcribe_source_video_survives_a_diarization_failure_without_losing_transcription(db_session):
+    """Diarization is optional and best-effort - a real diarization
+    provider (pyannote) can fail in ways transcription never does (model
+    load OOM, missing weights). That failure must never be reported as a
+    transcription failure, and the already-succeeded transcription must
+    survive it intact."""
+    source_video = clip_service.register_source_video(
+        db_session, campaign_id=None, title="My Video", storage_path="/tmp/x.mp4"
+    )
+    transcription_provider = _FakeTranscriptionProvider(
+        TranscriptionResult(text="hello world", provider="fake", model="fake")
+    )
+
+    result = clip_service.transcribe_source_video(
+        db_session,
+        source_video=source_video,
+        transcription_provider=transcription_provider,
+        diarization_provider=_BoomDiarizationProvider(),
+    )
+
+    assert result.transcription_status == ProcessingStatus.COMPLETED
+    assert result.transcript_text == "hello world"
+    assert result.speaker_turns is None
+    # The session itself must still be usable afterward - proves the
+    # diarization failure didn't leave the transaction in a poisoned state.
+    db_session.flush()
 
 
 def test_analyze_source_video_creates_clips_from_transcript(db_session):
@@ -144,6 +215,55 @@ def test_render_clip_passes_transcript_words_through_to_the_renderer(db_session,
         TranscriptWord(start_s=0.0, end_s=1.0, word="hello"),
         TranscriptWord(start_s=1.0, end_s=2.0, word="world"),
     ]
+
+
+def test_render_clip_trims_real_leading_silence_before_rendering(db_session, tmp_media_dir):
+    """End-to-end (real ffmpeg silence detection, not a mock): a clip
+    selected to start right at the top of a source video that actually
+    opens with a second of silence should be rendered from the real
+    speech onset instead, not from the literal requested start_s."""
+    imageio_ffmpeg = pytest.importorskip("imageio_ffmpeg")
+    import subprocess
+
+    tmp_media_dir.mkdir(parents=True, exist_ok=True)
+    source_path = tmp_media_dir / "silence_source.mp4"
+    ffmpeg_bin = imageio_ffmpeg.get_ffmpeg_exe()
+    subprocess.run(
+        [
+            ffmpeg_bin, "-y",
+            "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono:d=1",
+            "-f", "lavfi", "-i", "sine=frequency=440:d=2",
+            "-f", "lavfi", "-i", "color=c=blue:size=320x240:rate=10:duration=3",
+            "-filter_complex", "[0:a][1:a]concat=n=2:v=0:a=1[a]",
+            "-map", "[a]", "-map", "2:v", "-shortest", str(source_path),
+        ],
+        check=True, capture_output=True,
+    )
+
+    source_video = clip_service.register_source_video(
+        db_session, campaign_id=None, title="Silence Source", storage_path=str(source_path)
+    )
+    db_session.flush()
+
+    from content_factory.db.models.clip import Clip
+
+    clip = Clip(source_video_id=source_video.id, start_s=0.0, end_s=3.0, hook_text=None, status=ClipStatus.SUGGESTED)
+    db_session.add(clip)
+    db_session.flush()
+
+    captured = {}
+
+    class _CapturingRenderer:
+        def render(self, request):
+            captured["request"] = request
+            return ClipRenderResult(asset_url=str(tmp_media_dir / "clips" / "x.mp4"), duration_s=2.0, provider="fake")
+
+    clip_service.render_clip(db_session, clip=clip, source_video=source_video, clip_renderer=_CapturingRenderer())
+
+    assert captured["request"].start_s == pytest.approx(1.0, abs=0.1)
+    # clip.start_s (the LLM's own selection) stays untouched - only the
+    # actual render/QC target range is adjusted.
+    assert clip.start_s == 0.0
 
 
 def test_render_clip_marks_failed_on_renderer_error(db_session, tmp_media_dir):

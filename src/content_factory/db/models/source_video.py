@@ -27,6 +27,14 @@ class SourceVideo(TimestampMixin, Base):
     provider that can't supply word-level timing, or a video transcribed
     before this existed, simply has none — callers fall back to
     segment-level captions, never a hard requirement.
+
+    `speaker_turns` (`[{"start": float, "end": float, "speaker": str}, ...]`)
+    is *who* is talking during each stretch, from a real (optional, heavy)
+    diarization provider — see diarization/base.py. Optional in the exact
+    same sense as transcript_words: the default NullDiarizationProvider
+    never populates it, so it's simply absent unless a deployment has
+    explicitly opted into real diarization; ClipRenderer falls back to
+    single-speaker caption styling whenever it's empty.
     """
 
     __tablename__ = "source_videos"
@@ -44,6 +52,7 @@ class SourceVideo(TimestampMixin, Base):
     transcript_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     transcript_segments: Mapped[list | None] = mapped_column(JSON, nullable=True)
     transcript_words: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    speaker_turns: Mapped[list | None] = mapped_column(JSON, nullable=True)
     transcription_agent_run_id: Mapped[int | None] = mapped_column(
         ForeignKey("agent_runs.id"), nullable=True
     )

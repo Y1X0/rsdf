@@ -24,10 +24,13 @@ from content_factory.db.models.clip import Clip
 from content_factory.db.models.enums import ClipStatus, ProcessingStatus, VideoStatus
 from content_factory.db.models.source_video import SourceVideo
 from content_factory.db.models.video import Video
+from content_factory.diarization.base import SpeakerDiarizationProvider, SpeakerTurn
 from content_factory.llm.base import LLMClient
 from content_factory.logging_config import get_logger
 from content_factory.transcription.base import TranscriptionProvider, TranscriptSegment, TranscriptWord
 from content_factory.video_clipping.base import ClipRenderer, ClipRenderRequest
+from content_factory.video_clipping.scene_detection import detect_scene_changes
+from content_factory.video_clipping.silence_trim import trim_leading_trailing_silence
 
 logger = get_logger(__name__)
 
@@ -47,7 +50,11 @@ def register_source_video(
 
 
 def transcribe_source_video(
-    db: Session, *, source_video: SourceVideo, transcription_provider: TranscriptionProvider
+    db: Session,
+    *,
+    source_video: SourceVideo,
+    transcription_provider: TranscriptionProvider,
+    diarization_provider: SpeakerDiarizationProvider | None = None,
 ) -> SourceVideo:
     log = logger.bind(source_video_id=source_video.id)
     source_video.transcription_status = ProcessingStatus.IN_PROGRESS
@@ -91,6 +98,30 @@ def transcribe_source_video(
         log.error("source_video_transcription_failed", exc_info=True)
         raise
 
+    # Diarization is genuinely optional and best-effort, deliberately
+    # outside the try/except above: transcription itself already
+    # succeeded by this point, so a diarization failure (real providers
+    # like pyannote can fail in ways transcription never does - missing
+    # model weights, an out-of-memory model load) must never be reported
+    # as a transcription failure, and never blocks the pipeline.
+    if diarization_provider is not None:
+        try:
+            # A SAVEPOINT (not the outer transaction): if diarization fails
+            # mid-flush, only its own change is undone - a plain
+            # db.rollback() here would also wipe out the transcription
+            # success already flushed above, which must survive regardless
+            # of whether this optional, best-effort step succeeds.
+            with db.begin_nested():
+                diarization_result = diarization_provider.diarize(source_video.storage_path)
+                source_video.speaker_turns = [
+                    {"start": t.start_s, "end": t.end_s, "speaker": t.speaker_label}
+                    for t in diarization_result.turns
+                ]
+                db.flush()
+            log.info("source_video_diarized", speaker_count=diarization_result.speaker_count)
+        except Exception:
+            log.warning("source_video_diarization_failed", exc_info=True)
+
     return source_video
 
 
@@ -106,9 +137,13 @@ def analyze_source_video(
         for s in (source_video.transcript_segments or [])
     ]
 
+    scene_changes = detect_scene_changes(source_video.storage_path)
+
     try:
         agent = ClipSelectionAgent(llm_client)
-        clips = agent.select_clips(db, source_video=source_video, segments=segments, max_clips=max_clips)
+        clips = agent.select_clips(
+            db, source_video=source_video, segments=segments, max_clips=max_clips, scene_changes=scene_changes
+        )
         # select_clips wraps its own agent_run internally (scope
         # "source_video.analyze"); link the most recent one here so
         # SourceVideo also carries a direct pointer to that run.
@@ -171,6 +206,19 @@ def render_clip(db: Session, *, clip: Clip, source_video: SourceVideo, clip_rend
         TranscriptWord(start_s=w["start"], end_s=w["end"], word=w["word"])
         for w in (source_video.transcript_words or [])
     ]
+    speaker_turns = [
+        SpeakerTurn(start_s=t["start"], end_s=t["end"], speaker_label=t["speaker"])
+        for t in (source_video.speaker_turns or [])
+    ]
+
+    # Trim dead air off both edges of the selected range before cutting -
+    # a selection's exact boundary often lands a fraction of a second
+    # before speech starts or after it ends. clip.start_s/end_s themselves
+    # (the LLM's own selection, already persisted) are left untouched;
+    # only the actual render/QC target range is adjusted.
+    render_start_s, render_end_s = trim_leading_trailing_silence(
+        source_video.storage_path, start_s=clip.start_s, end_s=clip.end_s
+    )
 
     try:
         with agent_run(
@@ -185,11 +233,12 @@ def render_clip(db: Session, *, clip: Clip, source_video: SourceVideo, clip_rend
             request = ClipRenderRequest(
                 clip_id=clip.id,
                 source_path=source_video.storage_path,
-                start_s=clip.start_s,
-                end_s=clip.end_s,
+                start_s=render_start_s,
+                end_s=render_end_s,
                 hook_text=clip.hook_text,
                 transcript_segments=segments,
                 transcript_words=words,
+                speaker_turns=speaker_turns,
             )
             result = clip_renderer.render(request)
             handle.record_output(
@@ -217,7 +266,11 @@ def render_clip(db: Session, *, clip: Clip, source_video: SourceVideo, clip_rend
 
         qc_status, qc_notes = _run_clip_qc(
             asset_url=result.asset_url,
-            requested_duration_s=clip.end_s - clip.start_s,
+            # The renderer was actually asked to cut render_start_s..
+            # render_end_s (post-silence-trim), not clip.start_s..end_s -
+            # QC must compare against what was actually requested, or a
+            # trimmed clip would spuriously fail the duration check.
+            requested_duration_s=render_end_s - render_start_s,
             actual_duration_s=result.duration_s,
         )
         video.qc_status = qc_status
