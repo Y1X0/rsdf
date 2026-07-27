@@ -20,6 +20,17 @@ from content_factory.logging_config import get_logger
 
 logger = get_logger(__name__)
 
+# Read from the model itself, not duplicated as a magic number: a real LLM
+# has no reason to respect "keep this under 50 characters" just because
+# the prompt schema hint says "a short label" - a verbose variant_label
+# (e.g. a whole descriptive sentence instead of "A"/"variant_1") is a
+# genuine, observed real-provider behavior, not a hypothetical. Postgres
+# enforces the column's VARCHAR(50) bound at INSERT time regardless of
+# what Python does, so silently letting an oversized value through was a
+# real, reproduced production 500 - truncating here is the fix, not just
+# defense in depth.
+_VARIANT_LABEL_MAX_LENGTH = Script.__table__.columns["variant_label"].type.length
+
 _SYSTEM_PROMPT = (
     "You are the Script Agent of an AI content production system. You write "
     "short-form video hooks and scripts optimized for watch time, completion "
@@ -97,9 +108,10 @@ class ScriptAgent:
                 if not isinstance(variant, dict) or not variant.get("hook_text") or not variant.get("full_text"):
                     skipped_variants += 1
                     continue
+                variant_label = str(variant.get("variant_label") or f"variant_{i + 1}")[:_VARIANT_LABEL_MAX_LENGTH]
                 script = Script(
                     idea_id=idea.id,
-                    variant_label=variant.get("variant_label") or f"variant_{i + 1}",
+                    variant_label=variant_label,
                     experiment_group=ascii_uppercase[i] if i < len(ascii_uppercase) else f"group_{i}",
                     hook_text=variant["hook_text"],
                     full_text=variant["full_text"],

@@ -91,6 +91,31 @@ def test_generate_variants_skips_malformed_items_instead_of_crashing_the_whole_b
     assert {s.hook_text for s in scripts} == {"hook 1", "hook 5"}
 
 
+def test_generate_variants_truncates_an_overlong_variant_label_instead_of_crashing(db_session):
+    """Regression test for a real, reproduced production incident: a real
+    LLM response with well-formed hook_text/full_text but a verbose,
+    sentence-length variant_label (a real model has no reason to keep it
+    short just because the prompt asked for one) hit Postgres's
+    VARCHAR(50) column bound at INSERT time - a DataError that, before
+    this fix, corrupted the whole request even after selection had
+    otherwise succeeded. variant_label must be truncated to fit, not
+    trusted verbatim."""
+    from content_factory.agents.script_agent import _VARIANT_LABEL_MAX_LENGTH
+
+    long_label = "Countdown Hook Variant Focusing on Urgency, FOMO, and a Direct Call To Action"
+    assert len(long_label) > _VARIANT_LABEL_MAX_LENGTH  # the test fixture itself must exceed the bound
+    canned = [{"variant_label": long_label, "hook_text": "hook 1", "full_text": "full 1"}]
+    llm = FakeLLMClient(response_builder=lambda system, prompt: json.dumps(canned))
+    agent = ScriptAgent(llm)
+    idea = _idea(db_session)
+
+    scripts = agent.generate_variants(db_session, idea=idea, retrieved_hooks=[], num_variants=1)
+
+    assert len(scripts) == 1
+    assert len(scripts[0].variant_label) == _VARIANT_LABEL_MAX_LENGTH
+    assert scripts[0].variant_label == long_label[:_VARIANT_LABEL_MAX_LENGTH]
+
+
 def test_generate_variants_returns_empty_list_when_every_item_is_malformed(db_session):
     canned = [{"variant_label": "v1"}, "nonsense", {"hook_text": "only a hook, no full_text"}]
     llm = FakeLLMClient(response_builder=lambda system, prompt: json.dumps(canned))

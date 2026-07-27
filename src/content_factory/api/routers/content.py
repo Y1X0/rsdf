@@ -191,11 +191,28 @@ def select_idea(
     except Exception as exc:
         # A raised exception here is always some real external-provider
         # failure (bad/missing API key, rate limit, decommissioned model,
-        # network error - agent_run()/run_idempotent() already logged and
-        # durably recorded it). That's an expected, handleable outcome for
-        # this cascade, exactly like the "0 usable variants" case below -
-        # it must be reported back honestly, not left to fall through to a
-        # bare 500 with no detail anywhere the caller can see it.
+        # network error, or a genuine DB error such as a real LLM response
+        # not fitting a bounded column - agent_run()/run_idempotent()
+        # already logged and durably recorded it). That's an expected,
+        # handleable outcome for this cascade, exactly like the "0 usable
+        # variants" case below - it must be reported back honestly, not
+        # left to fall through to a bare 500 with no detail anywhere the
+        # caller can see it.
+        #
+        # db.rollback() is mandatory here, not optional cleanup: a DB-level
+        # failure (e.g. the DataError above) leaves this session's
+        # transaction in SQLAlchemy's "pending rollback" state, where *any*
+        # further use of `db` - including the ORM reads
+        # ContentIdeaOut.model_validate(idea) below needs - raises its own
+        # PendingRollbackError. Without this line, that second, unhandled
+        # exception is what a caller actually saw: a bare 500 with none of
+        # the detail this except block exists to provide. Safe to call
+        # unconditionally: it only discards this request's *own*
+        # not-yet-committed work (the failed Script inserts) - idea.status
+        # = "selected" was already committed earlier, as a side effect of
+        # agent_run()'s own commit-on-completion/failure durability
+        # guarantee, so it survives this rollback intact.
+        db.rollback()
         logger.error("idea_selection_cascade_script_generation_failed", idea_id=idea_id, error=str(exc))
         return IdeaSelectionResult(
             idea=ContentIdeaOut.model_validate(idea),
@@ -236,6 +253,7 @@ def select_idea(
             idempotency_key=f"auto-select-idea-{idea_id}-render",
         )
     except Exception as exc:
+        db.rollback()  # same reasoning as the script-generation except block above
         logger.error(
             "idea_selection_cascade_render_failed", idea_id=idea_id, script_id=chosen_script.id, error=str(exc)
         )
