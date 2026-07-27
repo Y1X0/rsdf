@@ -18,7 +18,15 @@ from pathlib import Path
 
 from content_factory.video_production.renderer.base import RenderRequest, RenderResult, VideoRenderer
 
-_FRAME_SIZE = (1080, 1920)  # 9:16 short-form
+# 9:16 short-form. Deliberately not full 1080x1920: a real production
+# incident showed the container crashing outright (no clean failure, just
+# the process dying mid-render) under a free-hosting-tier memory limit -
+# both Pillow's per-frame buffer and, more significantly, libx264's
+# internal encoding buffers scale with pixel count. Quartering the pixel
+# count (540x960) is the single biggest lever available without any paid
+# infrastructure change, and 540x960 is itself a perfectly normal
+# short-form delivery resolution, not a degraded one.
+_FRAME_SIZE = (540, 960)
 
 
 class TemplatePillowRenderer(VideoRenderer):
@@ -75,7 +83,12 @@ class TemplatePillowRenderer(VideoRenderer):
             ]
             if request.voiceover_audio_path:
                 cmd += ["-i", request.voiceover_audio_path]
-            cmd += ["-pix_fmt", "yuv420p", str(asset_path)]
+            # -preset ultrafast + a bounded thread count: both cut libx264's
+            # own memory footprint and CPU usage substantially (at the cost
+            # of a somewhat larger file for the same quality) - the other
+            # lever available for staying inside a memory-constrained free
+            # hosting tier, alongside the reduced _FRAME_SIZE above.
+            cmd += ["-pix_fmt", "yuv420p", "-preset", "ultrafast", "-threads", "1", str(asset_path)]
             subprocess.run(cmd, check=True, capture_output=True)
 
         duration_ms = int((time.monotonic() - start) * 1000)
