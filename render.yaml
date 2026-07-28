@@ -86,6 +86,20 @@ services:
         value: "silent"
       - key: RENDERER_BACKEND
         value: "null"
+      # Clip Factory pipeline (long video -> transcript -> AI-selected clips
+      # -> real ffmpeg cut+captions+hook -> publish) - the project's single
+      # current priority. Both httpx (transcription) and imageio-ffmpeg/
+      # Pillow (rendering) are already in requirements-lock.txt, so nothing
+      # else needs installing - these two vars were simply never set here,
+      # which silently left the live site on NullTranscriptionProvider
+      # (returns an empty transcript) and NullClipRenderer (writes a JSON
+      # manifest instead of cutting real video) - i.e. the entire mandated
+      # pipeline could never produce a real, publishable clip in production
+      # regardless of anything else working correctly.
+      - key: TRANSCRIPTION_PROVIDER
+        value: "groq"
+      - key: CLIP_RENDERER_BACKEND
+        value: "ffmpeg"
       - key: RUN_MIGRATIONS_ON_START
         value: "true"
       # Public asset hosting (Pilot priority #1 - see services/media_backup.py).
