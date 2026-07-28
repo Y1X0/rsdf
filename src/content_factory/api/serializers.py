@@ -26,6 +26,7 @@ def to_account_out(account: OwnedAccount) -> OwnedAccountOut:
         id=account.id,
         platform=account.platform,
         handle=account.handle,
+        platform_account_id=account.platform_account_id,
         has_credentials=bool(account.encrypted_oauth_token),
         niche_focus_id=account.niche_focus_id,
         health_score=account.health_score,

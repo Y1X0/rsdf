@@ -23,6 +23,15 @@ class OwnedAccount(TimestampMixin, Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     platform: Mapped[AccountPlatform] = mapped_column(Enum(AccountPlatform, native_enum=False, length=16))
     handle: Mapped[str] = mapped_column(String(200))
+    # The platform's own numeric/opaque ID for this account - NOT derivable
+    # from `handle` (a human-chosen display label). Real publishing needs
+    # this for platforms whose API is node-based rather than "me"-relative
+    # (e.g. Instagram Graph API's IG Business Account ID; see
+    # publishing/providers/instagram_provider.py) - nullable because it
+    # isn't needed for platforms where the access token alone identifies
+    # the account, and because an account can be registered for health/
+    # warmup tracking before this is known.
+    platform_account_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
     encrypted_oauth_token: Mapped[str | None] = mapped_column(Text, nullable=True)
     niche_focus_id: Mapped[int | None] = mapped_column(ForeignKey("niches.id"), nullable=True, index=True)
 

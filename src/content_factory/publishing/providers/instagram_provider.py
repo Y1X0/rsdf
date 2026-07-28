@@ -1,19 +1,38 @@
 """Real Instagram Graph API provider (Reels container publish). `httpx` is
 only imported here, lazily (install with `pip install '.[publishing]'`).
 Selected only when Instagram credentials and a decrypted per-account access
-token are available (see publishing/factory.py) — never exercised against
-the live API in this environment (ARCHITECTURE.md §13 flags Instagram's
-Meta App Review requirement), so this is unit-tested against mocked HTTP
-responses only. Simplified to a single container-create-and-publish call
-rather than the real API's separate create/poll/publish steps — update
-this when Instagram access is actually provisioned and validated
-end-to-end.
+token are available (see publishing/factory.py).
+
+Real Instagram video publishing is genuinely two Graph API calls, not one:
+create a media container (`POST /{ig-user-id}/media`, returns a
+`creation_id`), wait for Meta's servers to finish downloading/processing
+the video (`GET /{creation_id}?fields=status_code` — asynchronous; a
+freshly-created container is not immediately publishable), then
+`POST /{ig-user-id}/media_publish` with that `creation_id`. `account_id`
+must be the real numeric Instagram Business Account ID connected to a
+Facebook Page (`OwnedAccount.platform_account_id`) — "me" does not resolve
+to it.
 """
+
+import time
 
 from content_factory.publishing.base import PublishingProvider, PublishRequest, PublishResult
 from content_factory.publishing.retry import RetryableProviderError
 
-_PUBLISH_URL_TEMPLATE = "https://graph.facebook.com/v19.0/{account_id}/media_publish"
+_API_VERSION = "v21.0"
+_MEDIA_URL_TEMPLATE = f"https://graph.facebook.com/{_API_VERSION}/{{account_id}}/media"
+_MEDIA_PUBLISH_URL_TEMPLATE = f"https://graph.facebook.com/{_API_VERSION}/{{account_id}}/media_publish"
+_CONTAINER_STATUS_URL_TEMPLATE = f"https://graph.facebook.com/{_API_VERSION}/{{creation_id}}"
+
+# A short-form clip should finish processing well within this window; bounded
+# so a stuck container can't hang the publish request forever. Tune upward
+# if real usage shows longer videos need more time.
+_POLL_INTERVAL_S = 5.0
+_MAX_POLL_ATTEMPTS = 24  # ~2 minutes at the interval above
+
+
+class InstagramContainerProcessingFailed(Exception):
+    pass
 
 
 class InstagramPublishingProvider(PublishingProvider):
@@ -35,19 +54,69 @@ class InstagramPublishingProvider(PublishingProvider):
         if request.contains_ai_voice or request.contains_ai_visual:
             caption = f"{caption}\n#ad #AIgenerated"
 
+        creation_id = self._create_container(httpx, video_url=request.asset_url, caption=caption)
+        self._wait_until_ready(httpx, creation_id=creation_id)
+        media_id = self._publish_container(httpx, creation_id=creation_id)
+
+        return PublishResult(provider="instagram", published=True, external_post_id=media_id)
+
+    def _create_container(self, httpx, *, video_url: str, caption: str) -> str:
         try:
             response = httpx.post(
-                _PUBLISH_URL_TEMPLATE.format(account_id=self._account_id),
+                _MEDIA_URL_TEMPLATE.format(account_id=self._account_id),
                 params={"access_token": self._access_token},
-                json={"video_url": request.asset_url, "caption": caption, "media_type": "REELS"},
+                json={"video_url": video_url, "caption": caption, "media_type": "REELS"},
                 timeout=30.0,
             )
         except httpx.TimeoutException as exc:
-            raise RetryableProviderError("Instagram publish request timed out") from exc
+            raise RetryableProviderError("Instagram media container creation timed out") from exc
 
         if response.status_code >= 500:
-            raise RetryableProviderError(f"Instagram publish returned {response.status_code}")
+            raise RetryableProviderError(f"Instagram media container creation returned {response.status_code}")
         response.raise_for_status()
+        return response.json()["id"]
 
-        media_id = response.json().get("id")
-        return PublishResult(provider="instagram", published=True, external_post_id=media_id)
+    def _wait_until_ready(self, httpx, *, creation_id: str) -> None:
+        for _ in range(_MAX_POLL_ATTEMPTS):
+            try:
+                response = httpx.get(
+                    _CONTAINER_STATUS_URL_TEMPLATE.format(creation_id=creation_id),
+                    params={"access_token": self._access_token, "fields": "status_code"},
+                    timeout=30.0,
+                )
+            except httpx.TimeoutException as exc:
+                raise RetryableProviderError("Instagram media container status check timed out") from exc
+
+            if response.status_code >= 500:
+                raise RetryableProviderError(f"Instagram media container status check returned {response.status_code}")
+            response.raise_for_status()
+
+            status_code = response.json().get("status_code")
+            if status_code == "FINISHED":
+                return
+            if status_code == "ERROR":
+                raise InstagramContainerProcessingFailed(
+                    f"Instagram media container {creation_id} failed processing (status_code=ERROR)"
+                )
+            time.sleep(_POLL_INTERVAL_S)
+
+        raise RetryableProviderError(
+            f"Instagram media container {creation_id} did not finish processing within "
+            f"{_MAX_POLL_ATTEMPTS * _POLL_INTERVAL_S:.0f}s"
+        )
+
+    def _publish_container(self, httpx, *, creation_id: str) -> str | None:
+        try:
+            response = httpx.post(
+                _MEDIA_PUBLISH_URL_TEMPLATE.format(account_id=self._account_id),
+                params={"access_token": self._access_token},
+                json={"creation_id": creation_id},
+                timeout=30.0,
+            )
+        except httpx.TimeoutException as exc:
+            raise RetryableProviderError("Instagram media_publish call timed out") from exc
+
+        if response.status_code >= 500:
+            raise RetryableProviderError(f"Instagram media_publish returned {response.status_code}")
+        response.raise_for_status()
+        return response.json().get("id")

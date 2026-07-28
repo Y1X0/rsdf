@@ -61,6 +61,7 @@ def create_account(
             account = OwnedAccount(
                 platform=payload.platform,
                 handle=payload.handle,
+                platform_account_id=payload.platform_account_id,
                 encrypted_oauth_token=encrypted_token,
                 niche_focus_id=payload.niche_focus_id,
                 daily_post_cap=payload.daily_post_cap,

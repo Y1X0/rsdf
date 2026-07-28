@@ -77,7 +77,9 @@ def publish_video(
         return db.get(Publication, publication_id)
 
     def _work() -> Publication:
-        provider = get_publishing_provider(account.platform, settings, access_token=access_token)
+        provider = get_publishing_provider(
+            account.platform, settings, access_token=access_token, account_id=account.platform_account_id
+        )
         return publishing_service.publish_video(
             db,
             video=video,

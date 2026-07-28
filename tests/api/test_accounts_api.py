@@ -51,6 +51,25 @@ def test_create_account_without_token_reports_no_credentials(client):
     assert account["warmup_status"] == "warming"
 
 
+def test_create_account_stores_and_returns_platform_account_id(client):
+    """Required for real Instagram publishing (the IG Business Account ID,
+    not derivable from `handle`) - must round-trip through create and get,
+    and be included in PATCH updates."""
+    account = _create_account(client, platform="instagram", platform_account_id="17841440632369231")
+    assert account["platform_account_id"] == "17841440632369231"
+
+    fetched = client.get(f"/accounts/{account['id']}").json()
+    assert fetched["platform_account_id"] == "17841440632369231"
+
+    updated = client.patch(f"/accounts/{account['id']}", json={"platform_account_id": "999888777"}).json()
+    assert updated["platform_account_id"] == "999888777"
+
+
+def test_create_account_without_platform_account_id_defaults_to_none(client):
+    account = _create_account(client)
+    assert account["platform_account_id"] is None
+
+
 def test_duplicate_platform_handle_rejected(client):
     _create_account(client)
     resp = client.post("/accounts", json={"platform": "tiktok", "handle": "creator1"})

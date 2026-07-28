@@ -272,7 +272,9 @@ def attempt_auto_publish(db: Session, *, video: Video, settings: Settings) -> Au
 
     title, description = _default_publish_content(video)
     access_token = token_encryption.resolve_access_token_or_none(account, settings)
-    provider = get_publishing_provider(account.platform, settings, access_token=access_token)
+    provider = get_publishing_provider(
+        account.platform, settings, access_token=access_token, account_id=account.platform_account_id
+    )
 
     try:
         publication = publish_video(

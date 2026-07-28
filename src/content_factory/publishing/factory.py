@@ -14,12 +14,18 @@ _PLATFORM_CREDENTIAL_CHECK = {
 
 
 def get_publishing_provider(
-    platform: AccountPlatform, settings: Settings, access_token: str | None = None
+    platform: AccountPlatform,
+    settings: Settings,
+    access_token: str | None = None,
+    account_id: str | None = None,
 ) -> PublishingProvider:
     """Falls back to ManualPublishingProvider whenever platform-level
     credentials aren't configured *or* the specific account has no
     decrypted access token yet — matching every other provider factory's
-    "no secret -> safe zero-dependency default" rule."""
+    "no secret -> safe zero-dependency default" rule. `account_id` is the
+    platform's own numeric/opaque account ID (OwnedAccount.platform_account_id)
+    — required by node-based APIs like Instagram Graph API, where "me"
+    does not resolve to the connected IG Business Account."""
     has_platform_credentials = _PLATFORM_CREDENTIAL_CHECK.get(platform, lambda _: False)(settings)
 
     if not (has_platform_credentials and access_token):
@@ -40,6 +46,7 @@ def get_publishing_provider(
     if platform == AccountPlatform.INSTAGRAM:
         from content_factory.publishing.providers.instagram_provider import InstagramPublishingProvider
 
-        return InstagramPublishingProvider(access_token=access_token)
+        kwargs = {"account_id": account_id} if account_id else {}
+        return InstagramPublishingProvider(access_token=access_token, **kwargs)
 
     return ManualPublishingProvider()  # pragma: no cover - AccountPlatform is exhaustive above

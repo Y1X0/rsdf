@@ -8,6 +8,11 @@ from content_factory.db.models.enums import AccountHealthTier, AccountPlatform, 
 class OwnedAccountCreate(BaseModel):
     platform: AccountPlatform
     handle: str = Field(max_length=200)
+    # The platform's own numeric/opaque ID for this account - required for
+    # real publishing on node-based APIs (Instagram Graph API's IG Business
+    # Account ID; "me" does not resolve to it). Optional here since an
+    # account can be registered for health/warmup tracking first.
+    platform_account_id: str | None = Field(default=None, max_length=200)
     niche_focus_id: int | None = None
     daily_post_cap: int = Field(default=1, ge=1, le=50)
     # Plaintext input only — never stored or echoed back as-is. Optional:
@@ -22,6 +27,7 @@ class OwnedAccountUpdate(BaseModel):
     only when services/account_service.check_warmup_graduation_eligible
     allows it (enforced by the router, not just documented here)."""
 
+    platform_account_id: str | None = Field(default=None, max_length=200)
     niche_focus_id: int | None = None
     daily_post_cap: int | None = Field(default=None, ge=1, le=50)
     status: AccountStatus | None = None
@@ -33,6 +39,7 @@ class OwnedAccountOut(BaseModel):
     id: int
     platform: AccountPlatform
     handle: str
+    platform_account_id: str | None
     has_credentials: bool
     niche_focus_id: int | None
     health_score: float | None

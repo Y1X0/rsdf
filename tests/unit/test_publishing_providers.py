@@ -84,14 +84,77 @@ def test_youtube_provider_raises_retryable_on_5xx(monkeypatch):
 
 
 def test_instagram_provider_publishes_successfully(monkeypatch):
-    monkeypatch.setattr(httpx, "post", lambda *a, **k: _FakeResponse(200, {"id": "ig-123"}))
-    result = InstagramPublishingProvider(access_token="token").publish(_request())
+    """Real Instagram publishing is a real three-call sequence: create a
+    media container, poll until Meta finishes processing it, then publish
+    that container - a single call to /media_publish (the old, wrong
+    behavior) was never valid against the real Graph API."""
+    posts = []
+    gets = []
+
+    def _fake_post(url, **kwargs):
+        posts.append((url, kwargs))
+        if url.endswith("/media"):
+            return _FakeResponse(200, {"id": "creation-123"})
+        if url.endswith("/media_publish"):
+            assert kwargs["json"]["creation_id"] == "creation-123"
+            return _FakeResponse(200, {"id": "ig-123"})
+        raise AssertionError(f"unexpected POST url: {url}")
+
+    def _fake_get(url, **kwargs):
+        gets.append((url, kwargs))
+        return _FakeResponse(200, {"status_code": "FINISHED"})
+
+    monkeypatch.setattr(httpx, "post", _fake_post)
+    monkeypatch.setattr(httpx, "get", _fake_get)
+
+    result = InstagramPublishingProvider(access_token="token", account_id="17841440632369231").publish(_request())
+
     assert result.provider == "instagram"
     assert result.published is True
     assert result.external_post_id == "ig-123"
+    assert len(posts) == 2
+    assert "17841440632369231/media" in posts[0][0]
+    assert "17841440632369231/media_publish" in posts[1][0]
+    assert len(gets) == 1
+    assert "creation-123" in gets[0][0]
 
 
-def test_instagram_provider_raises_retryable_on_5xx(monkeypatch):
-    monkeypatch.setattr(httpx, "post", lambda *a, **k: _FakeResponse(502, {}))
+def test_instagram_provider_polls_until_container_is_finished(monkeypatch):
+    statuses = iter(["IN_PROGRESS", "IN_PROGRESS", "FINISHED"])
+
+    monkeypatch.setattr(httpx, "post", lambda url, **k: _FakeResponse(200, {"id": "ig-123"}))
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _FakeResponse(200, {"status_code": next(statuses)}))
+    monkeypatch.setattr("content_factory.publishing.providers.instagram_provider.time.sleep", lambda *_: None)
+
+    result = InstagramPublishingProvider(access_token="token", account_id="123").publish(_request())
+    assert result.published is True
+
+
+def test_instagram_provider_raises_on_container_processing_error(monkeypatch):
+    from content_factory.publishing.providers.instagram_provider import InstagramContainerProcessingFailed
+
+    monkeypatch.setattr(httpx, "post", lambda url, **k: _FakeResponse(200, {"id": "creation-123"}))
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _FakeResponse(200, {"status_code": "ERROR"}))
+
+    with pytest.raises(InstagramContainerProcessingFailed):
+        InstagramPublishingProvider(access_token="token", account_id="123").publish(_request())
+
+
+def test_instagram_provider_raises_retryable_when_container_never_finishes(monkeypatch):
+    monkeypatch.setattr(httpx, "post", lambda url, **k: _FakeResponse(200, {"id": "creation-123"}))
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _FakeResponse(200, {"status_code": "IN_PROGRESS"}))
+    monkeypatch.setattr("content_factory.publishing.providers.instagram_provider.time.sleep", lambda *_: None)
+
     with pytest.raises(RetryableProviderError):
-        InstagramPublishingProvider(access_token="token").publish(_request())
+        InstagramPublishingProvider(access_token="token", account_id="123").publish(_request())
+
+
+def test_instagram_provider_raises_retryable_on_5xx_during_container_creation(monkeypatch):
+    monkeypatch.setattr(httpx, "post", lambda url, **k: _FakeResponse(502, {}))
+    with pytest.raises(RetryableProviderError):
+        InstagramPublishingProvider(access_token="token", account_id="123").publish(_request())
+
+
+def test_instagram_provider_defaults_account_id_to_me():
+    provider = InstagramPublishingProvider(access_token="token")
+    assert provider._account_id == "me"
