@@ -752,10 +752,33 @@ async function renderVideos(view) {
       <button onclick="submitReview()">إرسال القرار</button>
       <div id="reviewStatus" class="status-line"></div>
     </div>
+    <div class="card">
+      <h2>الحسابات المرتبطة (Accounts)</h2>
+      <div class="sub">أضف حساب حقيقي مرة وحدة (Access Token فعلي)، وبعدين استخدم رقمه (ID) بخانة "نشر الفيديو" تحت.</div>
+      <table><thead><tr><th>ID</th><th>المنصة</th><th>Handle</th><th>بيانات اعتماد؟</th><th>الحالة</th></tr></thead><tbody id="accountsTbody"></tbody></table>
+      <button class="secondary" onclick="loadAccounts()">تحديث القائمة</button>
+      <div class="grid2" style="margin-top:10px">
+        <div>
+          <label>المنصة</label>
+          <select id="acctPlatform">
+            <option value="instagram">Instagram</option>
+            <option value="tiktok">TikTok</option>
+            <option value="youtube">YouTube</option>
+          </select>
+        </div>
+        <div><label>Handle (اسم تعريفي)</label><input id="acctHandle" placeholder="مثال: @my_account"></div>
+      </div>
+      <div class="grid2">
+        <div><label>Platform Account ID (لإنستغرام: IG Business Account ID)</label><input id="acctPlatformId" placeholder="مثال: 17841440632369231"></div>
+        <div><label>Access Token</label><input id="acctToken" type="password" placeholder="التوكن الحقيقي"></div>
+      </div>
+      <button onclick="createAccount()">إضافة الحساب</button>
+      <div id="acctStatus" class="status-line"></div>
+    </div>
     <div class="card" id="publishCard" style="display:none">
       <h2>نشر الفيديو <span id="publishVideoLabel"></span></h2>
       <div class="grid2">
-        <div><label>Account ID (من صفحة الإعدادات أو /accounts)</label><input id="publishAccountId" type="number" placeholder="مثال: 1"></div>
+        <div><label>Account ID (من جدول الحسابات فوق)</label><input id="publishAccountId" type="number" placeholder="مثال: 1"></div>
         <div><label>عنوان المنشور</label><input id="publishTitle" placeholder="عنوان"></div>
       </div>
       <textarea id="publishDescription" placeholder="وصف (اختياري)"></textarea>
@@ -765,6 +788,40 @@ async function renderVideos(view) {
     <div class="card"><h2>سجل العمليات</h2><div id="log"></div></div>`;
   await loadPendingReview();
   await loadAllVideos();
+  await loadAccounts();
+}
+
+async function loadAccounts() {
+  try {
+    const data = await api('/accounts?limit=50');
+    const tbody = document.getElementById('accountsTbody');
+    tbody.innerHTML = data.map(a =>
+      `<tr><td>${a.id}</td><td>${escapeHtml(a.platform)}</td><td>${escapeHtml(a.handle)}</td>` +
+      `<td>${a.has_credentials ? '<span class="pill ok">نعم</span>' : '<span class="pill muted">لا</span>'}</td>` +
+      `<td>${escapeHtml(a.status)}</td></tr>`).join('') ||
+      '<tr><td colspan="5" class="sub">لا يوجد حسابات مضافة بعد</td></tr>';
+  } catch (e) {
+    logLine('تعذر تحميل الحسابات: ' + e.message);
+  }
+}
+
+async function createAccount() {
+  const platform = document.getElementById('acctPlatform').value;
+  const handle = document.getElementById('acctHandle').value.trim();
+  const platform_account_id = document.getElementById('acctPlatformId').value.trim();
+  const oauth_token = document.getElementById('acctToken').value;
+  if (!handle) { setStatus('acctStatus', 'لازم تدخل Handle', false); return; }
+  try {
+    const body = { platform, handle, daily_post_cap: 1 };
+    if (platform_account_id) body.platform_account_id = platform_account_id;
+    if (oauth_token) body.oauth_token = oauth_token;
+    const data = await api('/accounts', { method: 'POST', body: JSON.stringify(body) });
+    setStatus('acctStatus', `تم إنشاء الحساب رقم ${data.id}`, true);
+    document.getElementById('acctToken').value = '';
+    await loadAccounts();
+  } catch (e) {
+    setStatus('acctStatus', 'خطأ: ' + e.message, false);
+  }
 }
 
 let _reviewVideoId = null;
