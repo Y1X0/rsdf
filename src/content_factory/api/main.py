@@ -141,9 +141,31 @@ def create_app() -> FastAPI:
                 logger.error("health_check_redis_failed", exc_info=True)
                 checks["redis"] = "unreachable"
 
+        # Purely informational - never affects the 200/503 status above.
+        # Render's own healthCheckPath points at this endpoint, so a
+        # provider resolving to a placeholder (e.g. TRANSCRIPTION_PROVIDER
+        # never set, silently defaulting to "null") must never make this
+        # endpoint report unhealthy - that's a real deploy-blocking
+        # incident, not a liveness failure. This exists precisely because
+        # that exact misconfiguration once shipped silently: nothing
+        # surfaced it short of actually running the whole pipeline and
+        # noticing the output was a JSON manifest instead of a real video.
+        pipeline = {
+            "transcription_provider": current_settings.resolved_transcription_provider(),
+            "clip_renderer_backend": current_settings.clip_renderer_backend,
+            "llm_provider": current_settings.resolved_llm_provider(),
+            "media_backup_enabled": current_settings.media_backup_enabled,
+            "media_backup_publicly_hostable": bool(
+                current_settings.media_backup_enabled and current_settings.media_backup_public_base_url
+            ),
+            "publishing_enabled": current_settings.publishing_enabled,
+        }
+
         if any(status == "unreachable" for status in checks.values()):
-            return JSONResponse(status_code=503, content={"status": "unhealthy", "checks": checks})
-        return {"status": "ok", "checks": checks}
+            return JSONResponse(
+                status_code=503, content={"status": "unhealthy", "checks": checks, "pipeline": pipeline}
+            )
+        return {"status": "ok", "checks": checks, "pipeline": pipeline}
 
     # Minimal operator UI: a single static, dependency-free HTML page
     # calling this same API from the browser (same-origin fetch, no CORS

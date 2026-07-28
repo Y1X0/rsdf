@@ -47,7 +47,13 @@ class TranscriptionProvider(ABC):
     @abstractmethod
     def transcribe(self, audio_path: str) -> TranscriptionResult:
         """Transcribe the audio track of the file at `audio_path` (a local
-        path — the source video itself, most audio/video containers work
-        directly with real providers) and return the full text plus a
-        timestamped segment breakdown."""
+        path — most audio/video containers work directly with real
+        providers) and return the full text plus a timestamped segment
+        breakdown. Callers going through clip_service.transcribe_source_video
+        typically pass a small, pre-extracted audio-only file rather than
+        the original source video directly — see
+        transcription/audio_extraction.py — since a real provider's request
+        size limit is easy for a genuinely long recording's raw file to
+        exceed; providers should not assume `audio_path` is the original
+        upload."""
         raise NotImplementedError

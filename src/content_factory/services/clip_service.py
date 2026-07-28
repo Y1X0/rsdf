@@ -32,6 +32,7 @@ from content_factory.services.media_backup import (
     NullMediaBackupProvider,
     backup_and_get_public_url,
 )
+from content_factory.transcription.audio_extraction import cleanup_extracted_audio, extract_compact_audio
 from content_factory.transcription.base import TranscriptionProvider, TranscriptSegment, TranscriptWord
 from content_factory.video_clipping.base import ClipRenderer, ClipRenderRequest
 from content_factory.video_clipping.scene_detection import detect_scene_changes
@@ -65,48 +66,63 @@ def transcribe_source_video(
     source_video.transcription_status = ProcessingStatus.IN_PROGRESS
     db.flush()
 
+    # Real bug found via code audit (never triggered by any test fixture
+    # small enough to not hit it): sending the raw long-form video file
+    # straight to a hosted Whisper-class API works for a short test clip
+    # and risks failing outright for exactly the genuinely long recordings
+    # this pipeline exists to handle - a one-hour 1080p file can be
+    # several GB, almost certainly over any real provider's per-request
+    # size limit, while its audio track alone compresses to a few MB. See
+    # transcription/audio_extraction.py's own docstring.
+    extracted_audio_path = extract_compact_audio(source_video.storage_path)
+    audio_path = extracted_audio_path or source_video.storage_path
+
     try:
-        with agent_run(
-            db,
-            agent_name="transcription_provider",
-            scope="source_video.transcribe",
-            entity_type="source_video",
-            entity_id=source_video.id,
-            cost_campaign_id=source_video.campaign_id,
-        ) as handle:
-            result = transcription_provider.transcribe(source_video.storage_path)
-            handle.record_output(
-                provider=result.provider,
-                model=result.model,
-                model_version=None,
-                prompt=source_video.storage_path,
-                output_summary={"segment_count": len(result.segments), "duration_s": result.duration_s},
-                cost_usd=result.cost_usd,
-                duration_ms=result.duration_ms,
-            )
-        source_video.transcription_agent_run_id = handle.run.id
-        source_video.transcript_text = result.text
-        source_video.transcript_segments = [
-            {"start": s.start_s, "end": s.end_s, "text": s.text} for s in result.segments
-        ]
-        source_video.transcript_words = [
-            {"start": w.start_s, "end": w.end_s, "word": w.word} for w in result.words
-        ]
-        if result.duration_s:
-            source_video.duration_s = result.duration_s
-        source_video.transcription_status = ProcessingStatus.COMPLETED
-        db.flush()
-        log.info("source_video_transcribed", segment_count=len(result.segments))
-    except Exception:
-        # commit(), not flush(): api/deps.get_db() rolls back the whole
-        # session when this exception reaches it, which would otherwise
-        # silently wipe this status write and leave the row stuck showing
-        # IN_PROGRESS forever - the exact same "P0" commit-boundary lesson
-        # agent_run() itself already applies (see agents/base.py).
-        source_video.transcription_status = ProcessingStatus.FAILED
-        db.commit()
-        log.error("source_video_transcription_failed", exc_info=True)
-        raise
+        try:
+            with agent_run(
+                db,
+                agent_name="transcription_provider",
+                scope="source_video.transcribe",
+                entity_type="source_video",
+                entity_id=source_video.id,
+                cost_campaign_id=source_video.campaign_id,
+            ) as handle:
+                result = transcription_provider.transcribe(audio_path)
+                handle.record_output(
+                    provider=result.provider,
+                    model=result.model,
+                    model_version=None,
+                    prompt=source_video.storage_path,
+                    output_summary={"segment_count": len(result.segments), "duration_s": result.duration_s},
+                    cost_usd=result.cost_usd,
+                    duration_ms=result.duration_ms,
+                )
+            source_video.transcription_agent_run_id = handle.run.id
+            source_video.transcript_text = result.text
+            source_video.transcript_segments = [
+                {"start": s.start_s, "end": s.end_s, "text": s.text} for s in result.segments
+            ]
+            source_video.transcript_words = [
+                {"start": w.start_s, "end": w.end_s, "word": w.word} for w in result.words
+            ]
+            if result.duration_s:
+                source_video.duration_s = result.duration_s
+            source_video.transcription_status = ProcessingStatus.COMPLETED
+            db.flush()
+            log.info("source_video_transcribed", segment_count=len(result.segments))
+        except Exception:
+            # commit(), not flush(): api/deps.get_db() rolls back the whole
+            # session when this exception reaches it, which would otherwise
+            # silently wipe this status write and leave the row stuck showing
+            # IN_PROGRESS forever - the exact same "P0" commit-boundary lesson
+            # agent_run() itself already applies (see agents/base.py).
+            source_video.transcription_status = ProcessingStatus.FAILED
+            db.commit()
+            log.error("source_video_transcription_failed", exc_info=True)
+            raise
+    finally:
+        if extracted_audio_path:
+            cleanup_extracted_audio(extracted_audio_path)
 
     # Diarization is genuinely optional and best-effort, deliberately
     # outside the try/except above: transcription itself already

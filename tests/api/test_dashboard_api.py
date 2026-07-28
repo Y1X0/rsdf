@@ -113,6 +113,64 @@ def test_health_endpoint_includes_redis_check_when_configured(client, monkeypatc
         get_settings.cache_clear()
 
 
+def test_health_endpoint_reports_the_resolved_clip_factory_pipeline_config(client, monkeypatch):
+    """Regression test for a real production incident: TRANSCRIPTION_PROVIDER
+    and CLIP_RENDERER_BACKEND were never set in render.yaml, so the live
+    site silently ran the entire mandated clip-factory pipeline on
+    NullTranscriptionProvider/NullClipRenderer with no error anywhere - the
+    only way to have caught it short of running the whole pipeline and
+    noticing the output was a placeholder. /health now reports the actual
+    resolved provider for every stage so this class of gap is visible from
+    a single unauthenticated GET, matching what Render's own healthCheckPath
+    already polls every 30s."""
+    from content_factory.config import get_settings
+
+    # Explicitly forced (rather than relying on ambient .env content, which
+    # a local dev environment may have populated with real credentials for
+    # its own manual testing) so this asserts the *resolution* logic itself,
+    # deterministically, regardless of what's in any given .env.
+    monkeypatch.setenv("GROQ_API_KEY", "")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+    monkeypatch.setenv("TRANSCRIPTION_PROVIDER", "null")
+    monkeypatch.setenv("CLIP_RENDERER_BACKEND", "null")
+    monkeypatch.setenv("MEDIA_BACKUP_ENABLED", "false")
+    get_settings.cache_clear()
+    try:
+        resp = client.get("/health")
+        assert resp.status_code == 200
+        pipeline = resp.json()["pipeline"]
+        # Every resolved provider correctly reports its safe fallback - this
+        # asserts the field is genuinely *resolved* (would reflect
+        # "null"/"fake" here), not just echoing the raw configured value.
+        assert pipeline["transcription_provider"] == "null"
+        assert pipeline["clip_renderer_backend"] == "null"
+        assert pipeline["llm_provider"] == "fake"
+        assert pipeline["media_backup_enabled"] is False
+        assert pipeline["media_backup_publicly_hostable"] is False
+        assert pipeline["publishing_enabled"] is True
+    finally:
+        get_settings.cache_clear()
+
+
+def test_health_endpoint_pipeline_config_never_affects_the_liveness_status(client, monkeypatch):
+    """A placeholder provider is a real configuration problem, but it is
+    not the same thing as "this instance is unreachable" - Render's own
+    healthCheckPath points at /health, so reporting the pipeline as
+    misconfigured must never also flip status/status_code, or a bad
+    TRANSCRIPTION_PROVIDER value would make Render kill/restart-loop an
+    otherwise-healthy instance."""
+    from content_factory.api import main as main_module
+
+    class _BrokenEngine:
+        def connect(self):
+            raise RuntimeError("simulated database outage")
+
+    monkeypatch.setattr(main_module, "engine", _BrokenEngine())
+    resp = client.get("/health")
+    assert resp.status_code == 503
+    assert "pipeline" in resp.json()
+
+
 def test_response_includes_a_request_id_header(client):
     """Production Hardening Sprint H6: request-ID correlation middleware —
     every response carries an X-Request-ID, generated if the caller didn't

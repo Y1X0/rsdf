@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 
@@ -83,6 +84,54 @@ def test_transcribe_source_video_marks_failed_on_error(db_session):
     with pytest.raises(RuntimeError):
         clip_service.transcribe_source_video(db_session, source_video=source_video, transcription_provider=_BoomProvider())
     assert source_video.transcription_status == ProcessingStatus.FAILED
+
+
+def test_transcribe_source_video_sends_a_compact_extracted_audio_file_not_the_raw_video(db_session, tmp_path):
+    """Regression test for a real production risk found via code audit:
+    the raw source video file was always sent directly to the
+    transcription provider - fine for a small test clip, but a genuinely
+    long real recording can be several GB, almost certainly over any
+    hosted Whisper-class API's real request-size limit. Proves the
+    provider actually receives a *different*, real, audio-only file - not
+    just that the pipeline still works when it happens to receive the raw
+    video path."""
+    pytest.importorskip("imageio_ffmpeg")
+    import subprocess
+
+    import imageio_ffmpeg
+
+    real_video_path = tmp_path / "real_source.mp4"
+    ffmpeg_bin = imageio_ffmpeg.get_ffmpeg_exe()
+    subprocess.run(
+        [
+            ffmpeg_bin, "-y",
+            "-f", "lavfi", "-i", "testsrc=size=320x240:rate=10",
+            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100",
+            "-t", "3", "-pix_fmt", "yuv420p", str(real_video_path),
+        ],
+        check=True, capture_output=True,
+    )
+
+    received_paths = []
+
+    class _SpyTranscriptionProvider:
+        def transcribe(self, audio_path: str) -> TranscriptionResult:
+            received_paths.append(audio_path)
+            return TranscriptionResult(text="ok", provider="fake", model="fake-model")
+
+    source_video = clip_service.register_source_video(
+        db_session, campaign_id=None, title="My Video", storage_path=str(real_video_path)
+    )
+    clip_service.transcribe_source_video(
+        db_session, source_video=source_video, transcription_provider=_SpyTranscriptionProvider()
+    )
+
+    assert len(received_paths) == 1
+    received_path = received_paths[0]
+    assert received_path != str(real_video_path)
+    assert received_path.endswith(".m4a")
+    # The temp extracted file must be cleaned up once transcription completes.
+    assert not Path(received_path).exists()
 
 
 def test_transcribe_source_video_stores_diarization_result_when_provider_given(db_session):

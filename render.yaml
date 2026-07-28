@@ -123,6 +123,22 @@ services:
         sync: false
       - key: PUBLISHING_ENABLED
         value: "true"
+      # Per-platform "this integration is deliberately turned on" gate
+      # (publishing/factory.py's _PLATFORM_CREDENTIAL_CHECK, mirrored in
+      # analytics_ingestion/factory.py) - real credentials are declared
+      # here without a value: without this, get_publishing_provider falls
+      # back to ManualPublishingProvider (and metrics sync to
+      # ManualAnalyticsProvider) for Instagram forever, regardless of
+      # whether a real, working access token is ever stored on an
+      # OwnedAccount row via the dashboard/API - i.e. the actual "نشره"
+      # stage could reach a Publication row but never a real platform
+      # call. A real Meta Developer App (the one the IG access token
+      # itself came from) already has these two values - add them as
+      # secrets in Render's dashboard.
+      - key: INSTAGRAM_APP_ID
+        sync: false
+      - key: INSTAGRAM_APP_SECRET
+        sync: false
       - key: RATE_LIMIT_BACKEND
         value: "memory"
       - key: METRICS_ENABLED

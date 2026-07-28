@@ -195,12 +195,56 @@ path. A full migration to object storage as the *primary* store is a
 larger follow-up beyond this sprint's scope (see
 `docs/PRODUCTION_HARDENING_REPORT.md`'s remaining-risks section).
 
+## 8b. The Clip Factory pipeline's required environment variables
+
+The current single priority (long-form video -> transcribe -> AI selects
+clips -> real ffmpeg cut/hook/captions -> review -> publish,
+`services/clip_service.py`) needs three separate things to actually be
+configured for real — each has a safe, silent fallback to a placeholder if
+left unset, exactly like every other provider in this codebase, which is
+precisely what made a real incident possible: `render.yaml` simply never
+set the first two below for a while, so the live site ran the entire
+pipeline on placeholders with no error anywhere short of actually running
+it end to end and noticing the output.
+
+- **`TRANSCRIPTION_PROVIDER=groq`** + a real `GROQ_API_KEY`. Unset (or no
+  key), this silently falls back to `NullTranscriptionProvider` — an empty
+  transcript, not a real one. There is no non-Groq real transcription
+  provider in this codebase, so this is required regardless of which
+  `LLM_PROVIDER` you use for text generation.
+- **`CLIP_RENDERER_BACKEND=ffmpeg`**. Unset, this silently falls back to
+  `NullClipRenderer` — a JSON manifest referencing the cut range, not a
+  real video file. Needs no extra credential (`imageio-ffmpeg`/`Pillow`
+  are already in `requirements-lock.txt`), just the env var itself.
+- **`INSTAGRAM_APP_ID` / `INSTAGRAM_APP_SECRET`** (real values from the
+  same Meta Developer App an Instagram access token came from) — a
+  deliberate, separate "this platform integration is turned on" gate,
+  independent of any one account's own access token
+  (`publishing/factory.py`'s `_PLATFORM_CREDENTIAL_CHECK`). Without it,
+  publishing falls back to `ManualPublishingProvider` for every Instagram
+  account regardless of whether that account has a real, working access
+  token stored.
+
+**Verify all of this actually took effect after a deploy** with
+`GET /health`'s `pipeline` block (see §9) — a single unauthenticated
+request, no video upload needed — or run
+`scripts/verify_production_pipeline.sh` end to end.
+
 ## 9. Observability endpoints
 
 - `GET /health` — liveness + per-dependency connectivity checks (database
   always; Redis too, when `RATE_LIMIT_BACKEND=redis` is actually
   configured) — `200` with `{"status": "ok", "checks": {...}}`, or `503`
-  the moment any configured dependency is unreachable.
+  the moment any configured dependency is unreachable. Also always
+  includes a `pipeline` block reporting the actually-resolved (not just
+  configured) provider for every clip-factory stage
+  (`transcription_provider`, `clip_renderer_backend`, `llm_provider`,
+  `media_backup_enabled`/`media_backup_publicly_hostable`,
+  `publishing_enabled`) — purely informational, it never affects the
+  200/503 status itself, since a misconfigured pipeline is a real problem
+  but not the same thing as "this instance is unreachable" (Render's own
+  `healthCheckPath` polls this route; flipping it unhealthy over a
+  placeholder provider would restart-loop an otherwise-fine instance).
 - `GET /metrics` — Prometheus exposition format (Production Hardening
   Sprint H6), present whenever the `observability` extra is installed;
   absent (404) otherwise, never a hard dependency.
