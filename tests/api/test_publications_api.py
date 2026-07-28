@@ -11,6 +11,23 @@ def _create_approved_video(client) -> dict:
     scripts = client.post(f"/ideas/{idea['id']}/scripts", json={"num_variants": 1}).json()
     video = client.post(f"/scripts/{scripts[0]['id']}/render", json={}).json()
     client.post(f"/videos/{video['id']}/review", json={"reviewer_id": "bob", "decision": "approved"})
+
+    # No MEDIA_BACKUP_* configured in the test environment, so the render
+    # above left a local filesystem path on Video.asset_url -
+    # publishing_service now correctly refuses to publish that (see
+    # test_publishing_service.py's dedicated coverage for the refusal
+    # itself). Every *other* test in this file is about what happens after
+    # an asset is already publicly reachable, so simulate that directly via
+    # the session the test client exposes for exactly this purpose.
+    from content_factory.db.models.video import Video
+
+    db = client.db_session_factory()
+    try:
+        db.get(Video, video["id"]).asset_url = f"https://cdn.test.example/videos/{video['id']}.mp4"
+        db.commit()
+    finally:
+        db.close()
+
     return video
 
 
@@ -35,6 +52,27 @@ def test_publish_video_via_manual_provider(client):
 
     final_video = client.get(f"/videos/{video['id']}").json()
     assert final_video["status"] == "approved"  # unchanged — manual publish doesn't mark it published
+
+
+def test_publish_rejects_video_whose_asset_is_not_publicly_hosted(client):
+    """Without MEDIA_BACKUP_* configured (the test default, matching a
+    real deployment with no object storage set up yet), a rendered
+    video's asset_url is a local filesystem path - the API must refuse
+    with a clear, actionable 409 rather than forward it to a real
+    provider (which would either error or silently do nothing useful)."""
+    campaign = client.post("/campaigns", json={"brand_name": "Acme", "niche_name": "fitness", "cpm_rate": 3.0}).json()
+    idea = client.post(f"/campaigns/{campaign['id']}/ideas", json={"concept_summary": "idea"}).json()
+    scripts = client.post(f"/ideas/{idea['id']}/scripts", json={"num_variants": 1}).json()
+    video = client.post(f"/scripts/{scripts[0]['id']}/render", json={}).json()
+    client.post(f"/videos/{video['id']}/review", json={"reviewer_id": "bob", "decision": "approved"})
+    account = _create_account(client)
+
+    resp = client.post(
+        f"/videos/{video['id']}/publish", json={"account_id": account["id"], "title": "t", "description": "d"}
+    )
+
+    assert resp.status_code == 409
+    assert "public url" in resp.json()["detail"].lower()
 
 
 def test_publish_requires_approved_video(client):

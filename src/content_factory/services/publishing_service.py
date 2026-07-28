@@ -50,6 +50,18 @@ class CadenceCapExceeded(Exception):
     pass
 
 
+class AssetNotPubliclyHosted(Exception):
+    """Raised instead of ever handing a platform provider a local
+    filesystem path it cannot reach. A real publish (TikTok's
+    PULL_FROM_URL, Instagram/YouTube's media-upload-by-URL flows) requires
+    a real http(s) URL the platform's own servers can fetch — see
+    services/media_backup.py's public_url wiring. Local paths never even
+    reach `provider.publish()`; this is the one enforcement point every
+    publish path (manual and automatic) goes through."""
+
+    pass
+
+
 def _todays_publication_count(db: Session, *, account_id: int) -> int:
     start_of_day = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
     return (
@@ -77,6 +89,13 @@ def publish_video(
 ) -> Publication:
     if not settings.publishing_enabled:
         raise PublishingDisabled("Publishing is disabled (PUBLISHING_ENABLED=false).")
+
+    if not (video.asset_url or "").startswith(("http://", "https://")):
+        raise AssetNotPubliclyHosted(
+            f"Video #{video.id}'s asset is not hosted at a public URL (asset_url={video.asset_url!r}); "
+            "a platform can never reach a local filesystem path. Configure MEDIA_BACKUP_ENABLED, "
+            "MEDIA_BACKUP_S3_BUCKET, and MEDIA_BACKUP_PUBLIC_BASE_URL, then re-render this video."
+        )
 
     if account.status != AccountStatus.ACTIVE:
         raise AccountNotEligibleToPublish(f"Account status is {account.status.value}, not active.")
@@ -266,7 +285,7 @@ def attempt_auto_publish(db: Session, *, video: Video, settings: Settings) -> Au
             description=description,
             hashtags=[],
         )
-    except (PublishingDisabled, AccountNotEligibleToPublish, CadenceCapExceeded) as exc:
+    except (PublishingDisabled, AccountNotEligibleToPublish, CadenceCapExceeded, AssetNotPubliclyHosted) as exc:
         logger.info("auto_publish_skipped", video_id=video.id, reason=str(exc))
         return AutoPublishOutcome(status="skipped", detail=str(exc))
     except Exception as exc:

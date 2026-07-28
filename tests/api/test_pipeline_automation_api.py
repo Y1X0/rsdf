@@ -142,22 +142,66 @@ def test_review_approval_auto_publish_skipped_when_no_eligible_account(client):
     assert body["auto_metrics_status"] is None  # never attempted - nothing was published
 
 
-def test_review_approval_auto_publishes_when_exactly_one_eligible_account(client):
-    """The honest default outcome with the safe ManualPublishingProvider:
-    "scheduled", not "published" - a human still has to actually post it,
-    but the mechanical Publication row and cascade both ran with zero
-    manual endpoint calls."""
+def test_review_approval_auto_publish_skipped_when_asset_not_publicly_hosted(client):
+    """Real gap this closes: without MEDIA_BACKUP_* configured, a rendered
+    video's asset_url is a local filesystem path - no platform can ever
+    reach it. The cascade must honestly skip (not fabricate "scheduled")
+    rather than hand a real provider a broken local path, exactly like the
+    "no eligible account" case already does for a different precondition."""
     campaign = _create_campaign(client)
-    account = client.post("/accounts", json={"platform": "tiktok", "handle": "@acme_test"}).json()
+    client.post("/accounts", json={"platform": "tiktok", "handle": "@acme_test"})
     video = _select_and_get_video(client, campaign["id"])
 
     resp = client.post(f"/videos/{video['id']}/review", json={"decision": "approved"})
     assert resp.status_code == 200
     body = resp.json()
 
+    assert body["auto_publish_status"] == "skipped"
+    assert "not hosted at a public url" in body["auto_publish_detail"].lower()
+    assert body["auto_metrics_status"] is None
+
+    publications = client.get("/publications").json()
+    assert not any(p["video_id"] == video["id"] for p in publications)
+
+
+def test_review_approval_auto_publishes_when_asset_is_publicly_hosted(client):
+    """The honest default outcome with the safe ManualPublishingProvider,
+    once public asset hosting is actually configured: "scheduled", not
+    "published" - a human still has to actually post it, but the
+    mechanical Publication row and cascade both ran with zero manual
+    endpoint calls, and the asset handed to the provider is a real,
+    fetchable https:// URL, not a local path."""
+    from content_factory.api import deps
+    from content_factory.api.main import app
+    from content_factory.services.media_backup import MediaBackupProvider, MediaBackupResult
+
+    class _FakePubliclyHostedBackupProvider(MediaBackupProvider):
+        def backup(self, local_path: str) -> MediaBackupResult:
+            return MediaBackupResult(
+                backed_up=True,
+                location=f"s3://test-bucket/{local_path}",
+                public_url=f"https://cdn.test.example/{local_path.lstrip('/')}",
+            )
+
+    campaign = _create_campaign(client)
+    account = client.post("/accounts", json={"platform": "tiktok", "handle": "@acme_test"}).json()
+
+    app.dependency_overrides[deps.get_media_backup_provider] = lambda: _FakePubliclyHostedBackupProvider()
+    try:
+        video = _select_and_get_video(client, campaign["id"])
+        resp = client.post(f"/videos/{video['id']}/review", json={"decision": "approved"})
+    finally:
+        del app.dependency_overrides[deps.get_media_backup_provider]
+
+    assert resp.status_code == 200
+    body = resp.json()
+
     assert body["auto_publish_status"] == "scheduled"
     assert f"account #{account['id']}" in body["auto_publish_detail"]
     assert body["auto_metrics_status"] == "not_applicable"
+
+    published_video = client.get(f"/videos/{video['id']}").json()
+    assert published_video["asset_url"].startswith("https://cdn.test.example/")
 
     publications = client.get("/publications").json()
     assert any(p["video_id"] == video["id"] for p in publications)

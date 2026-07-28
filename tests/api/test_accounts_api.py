@@ -171,6 +171,22 @@ def test_account_profit_rollup_aggregates_videos_published_to_it(client):
     scripts = client.post(f"/ideas/{idea['id']}/scripts", json={"num_variants": 1}).json()
     video = client.post(f"/scripts/{scripts[0]['id']}/render", json={}).json()
     client.post(f"/videos/{video['id']}/review", json={"reviewer_id": "bob", "decision": "approved"})
+
+    # No MEDIA_BACKUP_* configured in the test environment, so the render
+    # above left a local filesystem path on Video.asset_url -
+    # publishing_service now correctly refuses to publish that (see
+    # test_publishing_service.py for dedicated coverage of the refusal
+    # itself). This test is about the profit rollup, not the asset-hosting
+    # guard, so simulate an already-publicly-reachable asset directly.
+    from content_factory.db.models.video import Video
+
+    db = client.db_session_factory()
+    try:
+        db.get(Video, video["id"]).asset_url = f"https://cdn.test.example/videos/{video['id']}.mp4"
+        db.commit()
+    finally:
+        db.close()
+
     client.post(f"/videos/{video['id']}/publish", json={"account_id": account["id"], "title": "t", "description": "d"})
 
     client.post(f"/videos/{video['id']}/cost", json={"category": "human_review", "cost_usd": 3.0})

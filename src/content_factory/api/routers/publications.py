@@ -34,6 +34,7 @@ from content_factory.schemas.publication import PublicationOut, PublishRequestBo
 from content_factory.services import analytics_service, idempotency, publishing_service, token_encryption
 from content_factory.services.publishing_service import (
     AccountNotEligibleToPublish,
+    AssetNotPubliclyHosted,
     CadenceCapExceeded,
     PublishingDisabled,
 )
@@ -102,6 +103,8 @@ def publish_video(
     except PublishingDisabled as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from None
     except AccountNotEligibleToPublish as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    except AssetNotPubliclyHosted as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
     except CadenceCapExceeded as exc:
         raise HTTPException(status_code=429, detail=str(exc)) from None

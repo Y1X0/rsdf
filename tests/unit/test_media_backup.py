@@ -1,13 +1,16 @@
 """Production Hardening Sprint H3 (DR4): media backup provider — a
-best-effort copy of a locally-rendered asset to durable storage, never a
-storage migration (local disk stays the primary read path everywhere
-else in the codebase)."""
+best-effort copy of a locally-rendered asset to durable storage. Extended
+to close the profit loop's #1 blocker: a successful upload can also
+produce a real public https:// URL (media_backup_public_base_url), which
+production_service.py/clip_service.py use to replace Video.asset_url, and
+publishing_service.py refuses to publish without."""
 
 from content_factory.config import Settings
 from content_factory.services import media_backup
 from content_factory.services.media_backup import (
     NullMediaBackupProvider,
     S3MediaBackupProvider,
+    backup_and_get_public_url,
     get_media_backup_provider,
 )
 
@@ -16,6 +19,7 @@ def test_null_provider_never_backs_up():
     result = NullMediaBackupProvider().backup("/tmp/whatever.mp4")
     assert result.backed_up is False
     assert result.location is None
+    assert result.public_url is None
 
 
 def test_factory_returns_null_provider_when_disabled():
@@ -62,6 +66,107 @@ def test_s3_provider_uploads_existing_file(monkeypatch, tmp_path):
     assert result.backed_up is True
     assert result.location == "s3://my-bucket/content-factory/media/video_1.mp4"
     assert uploads == [(str(local_file), "my-bucket", "content-factory/media/video_1.mp4")]
+    assert result.public_url is None  # no public_base_url configured
+
+
+def test_s3_provider_produces_a_public_url_when_base_url_configured(monkeypatch, tmp_path):
+    """This is what actually closes the profit loop's storage blocker:
+    without a public_url, production_service.py/clip_service.py have
+    nothing to replace the local Video.asset_url with, and
+    publishing_service.py refuses to publish."""
+    local_file = tmp_path / "video_1.mp4"
+    local_file.write_bytes(b"fake video bytes")
+
+    class _FakeS3Client:
+        def upload_file(self, filename, bucket, key):
+            pass
+
+    import boto3
+
+    monkeypatch.setattr(boto3, "client", lambda service, **kwargs: _FakeS3Client())
+
+    provider = S3MediaBackupProvider(
+        bucket="my-bucket",
+        prefix="content-factory/media",
+        public_base_url="https://pub-abc123.r2.dev/",
+    )
+    result = provider.backup(str(local_file))
+
+    assert result.backed_up is True
+    assert result.public_url == "https://pub-abc123.r2.dev/content-factory/media/video_1.mp4"
+
+
+def test_s3_provider_uses_endpoint_url_for_r2_compatible_services(monkeypatch, tmp_path):
+    local_file = tmp_path / "video_1.mp4"
+    local_file.write_bytes(b"fake video bytes")
+
+    captured_kwargs = {}
+
+    class _FakeS3Client:
+        def upload_file(self, filename, bucket, key):
+            pass
+
+    def _fake_client(service, **kwargs):
+        captured_kwargs.update(kwargs)
+        return _FakeS3Client()
+
+    import boto3
+
+    monkeypatch.setattr(boto3, "client", _fake_client)
+
+    provider = S3MediaBackupProvider(
+        bucket="my-bucket", prefix="media", endpoint_url="https://<account>.r2.cloudflarestorage.com"
+    )
+    provider.backup(str(local_file))
+
+    assert captured_kwargs == {"endpoint_url": "https://<account>.r2.cloudflarestorage.com"}
+
+
+def test_factory_passes_endpoint_url_and_public_base_url_through():
+    settings = Settings(
+        media_backup_enabled=True,
+        media_backup_s3_bucket="my-bucket",
+        media_backup_s3_endpoint_url="https://<account>.r2.cloudflarestorage.com",
+        media_backup_public_base_url="https://pub-abc123.r2.dev",
+    )
+    provider = get_media_backup_provider(settings)
+
+    assert isinstance(provider, S3MediaBackupProvider)
+    assert provider._endpoint_url == "https://<account>.r2.cloudflarestorage.com"
+    assert provider._public_base_url == "https://pub-abc123.r2.dev"
+
+
+def test_backup_and_get_public_url_skips_remote_assets():
+    import logging
+
+    log = logging.getLogger("test")
+    result = backup_and_get_public_url(NullMediaBackupProvider(), "https://already.example/video.mp4", log=log)
+    assert result is None
+
+
+def test_backup_and_get_public_url_skips_when_path_is_none():
+    import logging
+
+    log = logging.getLogger("test")
+    result = backup_and_get_public_url(NullMediaBackupProvider(), None, log=log)
+    assert result is None
+
+
+def test_backup_and_get_public_url_returns_public_url_on_success(monkeypatch, tmp_path):
+    import logging
+
+    local_file = tmp_path / "video_1.mp4"
+    local_file.write_bytes(b"fake video bytes")
+    log = logging.getLogger("test")
+
+    from content_factory.services.media_backup import MediaBackupProvider, MediaBackupResult
+
+    class _FakeProvider(MediaBackupProvider):
+        def backup(self, local_path: str) -> MediaBackupResult:
+            return MediaBackupResult(backed_up=True, location="s3://x/y", public_url="https://cdn.example/y")
+
+    result = backup_and_get_public_url(_FakeProvider(), str(local_file), log=log)
+    assert result == "https://cdn.example/y"
 
 
 def test_s3_provider_upload_failure_is_non_fatal(monkeypatch, tmp_path):

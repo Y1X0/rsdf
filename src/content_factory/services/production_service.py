@@ -23,7 +23,11 @@ from content_factory.db.models.enums import ProcessingStatus, VideoStatus
 from content_factory.db.models.video import Video
 from content_factory.logging_config import get_logger
 from content_factory.services import qc_service
-from content_factory.services.media_backup import MediaBackupProvider, NullMediaBackupProvider
+from content_factory.services.media_backup import (
+    MediaBackupProvider,
+    NullMediaBackupProvider,
+    backup_and_get_public_url,
+)
 from content_factory.video_production.captions import build_captions
 from content_factory.video_production.renderer.base import RenderRequest, VideoRenderer
 from content_factory.video_production.tts.base import TTSProvider
@@ -32,21 +36,6 @@ logger = get_logger(__name__)
 
 DEFAULT_TEMPLATE_ID = "default_template_v1"
 DEFAULT_VOICE_ID = "default"
-
-
-def _backup_if_local(backup_provider: MediaBackupProvider, path: str | None, *, log) -> None:
-    """Best-effort, never fatal (Production Hardening Sprint H3, DR4) —
-    a failed or skipped backup must never fail an otherwise-successful
-    render. Skips remote-URL assets (nothing local to copy), matching
-    qc_service's existing check for the same case."""
-    if not path or path.startswith(("http://", "https://")):
-        return
-    try:
-        result = backup_provider.backup(path)
-        if result.backed_up:
-            log.info("media_backed_up", local_path=path, location=result.location)
-    except Exception:
-        log.error("media_backup_unexpected_error", local_path=path, exc_info=True)
 
 
 def render_video(
@@ -96,7 +85,7 @@ def render_video(
         # Video row would still have no way to point back at them.
         video.tts_agent_run_id = tts_handle.run.id
         db.flush()
-        _backup_if_local(backup_provider, tts_result.audio_path, log=log)
+        backup_and_get_public_url(backup_provider, tts_result.audio_path, log=log)
 
         captions = build_captions(tts_result.word_timings)
 
@@ -130,9 +119,14 @@ def render_video(
             )
         video.render_agent_run_id = render_handle.run.id
         db.flush()
-        _backup_if_local(backup_provider, render_result.asset_url, log=log)
+        public_url = backup_and_get_public_url(backup_provider, render_result.asset_url, log=log)
 
-        video.asset_url = render_result.asset_url
+        # A public URL (real object storage configured and upload
+        # succeeded) replaces the local path outright — publishing_service
+        # reads Video.asset_url directly and a platform can never reach a
+        # local filesystem path. No public URL means the local path stays,
+        # exactly Phase 1/2's existing behavior (dev/test default).
+        video.asset_url = public_url or render_result.asset_url
         video.thumbnail_url = render_result.thumbnail_url
         video.duration_s = render_result.duration_s
         video.template_id = template_id

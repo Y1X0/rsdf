@@ -88,6 +88,23 @@ services:
         value: "null"
       - key: RUN_MIGRATIONS_ON_START
         value: "true"
+      # Public asset hosting (Pilot priority #1 - see services/media_backup.py):
+      # off by default (media_backup_enabled=false) until you have a real
+      # bucket. R2/S3 credentials go in AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY
+      # (boto3's own standard env vars, not custom keys here) - set those as
+      # `sync: false` secrets in Render's dashboard once you have a bucket.
+      # Leave MEDIA_BACKUP_ENABLED=false until all of AWS_ACCESS_KEY_ID/
+      # AWS_SECRET_ACCESS_KEY/MEDIA_BACKUP_S3_BUCKET/MEDIA_BACKUP_PUBLIC_BASE_URL
+      # (and MEDIA_BACKUP_S3_ENDPOINT_URL for R2) are actually set - publishing
+      # will simply skip every video until then rather than fail.
+      - key: MEDIA_BACKUP_ENABLED
+        value: "false"
+      - key: MEDIA_BACKUP_S3_BUCKET
+        value: ""
+      - key: MEDIA_BACKUP_S3_ENDPOINT_URL
+        value: ""
+      - key: MEDIA_BACKUP_PUBLIC_BASE_URL
+        value: ""
       - key: PUBLISHING_ENABLED
         value: "true"
       - key: RATE_LIMIT_BACKEND

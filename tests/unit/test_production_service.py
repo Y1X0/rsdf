@@ -110,6 +110,33 @@ def test_render_video_succeeds_even_if_backup_provider_raises(db_session, silent
     assert result.status == VideoStatus.RENDERED
 
 
+def test_render_video_replaces_asset_url_with_public_url_when_backup_provides_one(
+    db_session, silent_tts_provider, null_video_renderer
+):
+    """This is what actually closes the profit loop's storage blocker:
+    Video.asset_url must become the real public URL, since
+    publishing_service.py reads that field directly and a platform can
+    never reach a local filesystem path."""
+    video, script = _make_video_and_script(db_session)
+
+    class _PubliclyHostedBackupProvider(MediaBackupProvider):
+        def backup(self, local_path: str) -> MediaBackupResult:
+            return MediaBackupResult(
+                backed_up=True, location=f"s3://bucket/{local_path}", public_url=f"https://cdn.test/{local_path}"
+            )
+
+    result = production_service.render_video(
+        db_session,
+        video=video,
+        script=script,
+        tts_provider=silent_tts_provider,
+        video_renderer=null_video_renderer,
+        media_backup_provider=_PubliclyHostedBackupProvider(),
+    )
+
+    assert result.asset_url.startswith("https://cdn.test/")
+
+
 def test_render_video_defaults_to_null_backup_provider_when_omitted(
     db_session, silent_tts_provider, null_video_renderer
 ):

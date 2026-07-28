@@ -27,6 +27,11 @@ from content_factory.db.models.video import Video
 from content_factory.diarization.base import SpeakerDiarizationProvider, SpeakerTurn
 from content_factory.llm.base import LLMClient
 from content_factory.logging_config import get_logger
+from content_factory.services.media_backup import (
+    MediaBackupProvider,
+    NullMediaBackupProvider,
+    backup_and_get_public_url,
+)
 from content_factory.transcription.base import TranscriptionProvider, TranscriptSegment, TranscriptWord
 from content_factory.video_clipping.base import ClipRenderer, ClipRenderRequest
 from content_factory.video_clipping.scene_detection import detect_scene_changes
@@ -195,7 +200,15 @@ def _run_clip_qc(*, asset_url: str, requested_duration_s: float, actual_duration
     return ("passed" if passed else "failed"), ("; ".join(checks) or "all automated checks passed")
 
 
-def render_clip(db: Session, *, clip: Clip, source_video: SourceVideo, clip_renderer: ClipRenderer) -> Video:
+def render_clip(
+    db: Session,
+    *,
+    clip: Clip,
+    source_video: SourceVideo,
+    clip_renderer: ClipRenderer,
+    media_backup_provider: MediaBackupProvider | None = None,
+) -> Video:
+    backup_provider = media_backup_provider or NullMediaBackupProvider()
     log = logger.bind(clip_id=clip.id, source_video_id=source_video.id)
 
     video = Video(clip_id=clip.id, status=VideoStatus.PENDING_RENDER)
@@ -258,7 +271,12 @@ def render_clip(db: Session, *, clip: Clip, source_video: SourceVideo, clip_rend
                 duration_ms=result.duration_ms,
             )
         video.render_agent_run_id = handle.run.id
-        video.asset_url = result.asset_url
+        public_url = backup_and_get_public_url(backup_provider, result.asset_url, log=log)
+        # Same rule as production_service.render_video: a public URL (real
+        # object storage configured and upload succeeded) replaces the
+        # local path outright, since publishing_service reads Video.asset_url
+        # directly and a platform can never reach a local filesystem path.
+        video.asset_url = public_url or result.asset_url
         video.thumbnail_url = result.thumbnail_url
         video.duration_s = result.duration_s
         video.caption_style = "clip_subtitles"

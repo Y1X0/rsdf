@@ -17,6 +17,7 @@ from content_factory.api.deps import (
     get_db,
     get_diarization_provider,
     get_llm_client,
+    get_media_backup_provider,
     get_notification_provider,
     get_transcription_provider,
 )
@@ -36,6 +37,7 @@ from content_factory.schemas.source_video import AnalyzeRequest, SourceVideoOut,
 from content_factory.schemas.video import VideoOut
 from content_factory.services import clip_service, content_intelligence, idempotency
 from content_factory.services.budget_governor import enforce_budget
+from content_factory.services.media_backup import MediaBackupProvider
 from content_factory.transcription.base import TranscriptionProvider
 from content_factory.video_clipping.base import ClipRenderer
 
@@ -196,6 +198,7 @@ def render_clip(
     db: Session = Depends(get_db),
     clip_renderer: ClipRenderer = Depends(get_clip_renderer),
     notification_provider=Depends(get_notification_provider),
+    media_backup_provider: MediaBackupProvider = Depends(get_media_backup_provider),
     _principal: dict = Depends(require_operator),
 ) -> VideoOut:
     clip = db.get(Clip, clip_id)
@@ -213,7 +216,13 @@ def render_clip(
         return db.get(Video, video_id)
 
     def _work():
-        return clip_service.render_clip(db, clip=clip, source_video=source_video, clip_renderer=clip_renderer)
+        return clip_service.render_clip(
+            db,
+            clip=clip,
+            source_video=source_video,
+            clip_renderer=clip_renderer,
+            media_backup_provider=media_backup_provider,
+        )
 
     video, _created = idempotency.run_idempotent(
         db,

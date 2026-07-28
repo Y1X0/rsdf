@@ -185,6 +185,42 @@ def test_render_clip_creates_video_row_reusing_existing_pipeline_fields(db_sessi
     assert clip.status == ClipStatus.RENDERED
 
 
+def test_render_clip_replaces_asset_url_with_public_url_when_backup_provides_one(db_session, tmp_media_dir):
+    """This is what actually closes the profit loop's storage blocker for
+    the Clip Factory pipeline specifically: Video.asset_url must become
+    the real public URL, since publishing_service.py reads that field
+    directly and a platform can never reach a local filesystem path."""
+    from content_factory.db.models.clip import Clip
+    from content_factory.services.media_backup import MediaBackupProvider, MediaBackupResult
+
+    source_video = clip_service.register_source_video(
+        db_session, campaign_id=None, title="My Video", storage_path="/tmp/x.mp4"
+    )
+    source_video.transcript_segments = [{"start": 0.0, "end": 10.0, "text": "hello"}]
+    db_session.flush()
+
+    clip = Clip(source_video_id=source_video.id, start_s=1.0, end_s=6.0, hook_text="hook", status=ClipStatus.SUGGESTED)
+    db_session.add(clip)
+    db_session.flush()
+
+    class _PubliclyHostedBackupProvider(MediaBackupProvider):
+        def backup(self, local_path: str) -> MediaBackupResult:
+            return MediaBackupResult(
+                backed_up=True, location=f"s3://bucket/{local_path}", public_url=f"https://cdn.test/{local_path}"
+            )
+
+    renderer = NullClipRenderer(storage_dir=tmp_media_dir / "clips")
+    video = clip_service.render_clip(
+        db_session,
+        clip=clip,
+        source_video=source_video,
+        clip_renderer=renderer,
+        media_backup_provider=_PubliclyHostedBackupProvider(),
+    )
+
+    assert video.asset_url.startswith("https://cdn.test/")
+
+
 def test_render_clip_passes_transcript_words_through_to_the_renderer(db_session, tmp_media_dir):
     source_video = clip_service.register_source_video(
         db_session, campaign_id=None, title="My Video", storage_path="/tmp/x.mp4"

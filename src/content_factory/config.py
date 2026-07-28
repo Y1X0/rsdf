@@ -125,15 +125,26 @@ class Settings(BaseSettings):
     instagram_app_id: str = ""
     instagram_app_secret: str = ""
 
-    # --- Media backup (Production Hardening Sprint H3, DR4) ---
+    # --- Media backup / public asset hosting (Production Hardening Sprint
+    # H3, DR4; extended to close the profit loop's public-URL blocker) ---
     # Off by default: local disk (media_storage_dir) is always the primary
     # read path regardless of this setting — see services/media_backup.py's
-    # own docstring. AWS credentials come from boto3's own standard
+    # own docstring. AWS/R2 credentials come from boto3's own standard
     # environment variables (AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/
     # AWS_REGION), not custom settings here.
     media_backup_enabled: bool = False
     media_backup_s3_bucket: str = ""
     media_backup_s3_prefix: str = "content-factory/media"
+    # Only needed for an S3-compatible service other than real AWS S3 (e.g.
+    # Cloudflare R2's account-specific endpoint). Leave empty for real AWS.
+    media_backup_s3_endpoint_url: str = ""
+    # The real, already-verified-reachable base URL your bucket serves
+    # public objects from (R2's "r2.dev" public-access URL, a CDN/custom
+    # domain in front of the bucket, etc.) — WITHOUT a trailing slash and
+    # WITHOUT the key. Required for publishing_service.py to ever consider
+    # an uploaded asset publishable; empty means uploads still happen
+    # (durability backup) but nothing can ever be auto-published.
+    media_backup_public_base_url: str = ""
 
     # --- Distributed rate limiting (Production Hardening Sprint H4, S2/SC1) ---
     # "memory" (default) preserves Phase 1/2's exact existing behavior —
