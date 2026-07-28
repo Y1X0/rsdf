@@ -108,6 +108,19 @@ the moment you run more than one.
    `base → head → base → head` round-trip as part of both this sprint and
    the original production readiness review).
 
+**Single-instance platforms without a one-off command/Job/release-command
+mechanism** (e.g. Render's free/starter web services — a Docker Command
+override of `migrate` there runs alembic and exits, which the platform
+treats as a crashed deploy rather than a completed job, since it expects
+the container to stay up and bind `$PORT`): set `RUN_MIGRATIONS_ON_START=
+true`. `serve` then runs `alembic upgrade head` itself before starting
+uvicorn (still fail-closed — `set -e` in the entrypoint means a failed
+migration aborts before uvicorn ever starts, instead of serving against a
+stale schema). Only do this for a single instance — turning it on with
+more than one replica reintroduces the exact race this section opened
+with, since every replica would run its own migration concurrently at
+boot.
+
 ## 6. Worker count and the distributed-safety prerequisite
 
 `WEB_CONCURRENCY` (default `1`) controls how many `uvicorn` worker

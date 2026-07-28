@@ -19,6 +19,19 @@ case "$1" in
     exec alembic upgrade head
     ;;
   serve|"")
+    # Opt-in escape hatch for platforms that can't run a one-off `migrate`
+    # command against a web service (e.g. Render's free/starter web
+    # services expect the container to stay up and bind $PORT; a command
+    # that runs alembic and exits gets treated as a crashed deploy, not a
+    # completed job - preDeployCommand or a separate one-off Job is the
+    # right tool there, but isn't available on every plan). Defaults off
+    # to preserve the documented multi-replica-safe sequencing above; only
+    # set RUN_MIGRATIONS_ON_START=true for a single-instance deployment.
+    # `set -e` means a failed migration aborts here instead of serving
+    # against a stale schema.
+    if [ "${RUN_MIGRATIONS_ON_START:-false}" = "true" ]; then
+      alembic upgrade head
+    fi
     exec uvicorn content_factory.api.main:app \
       --host 0.0.0.0 \
       --port "${PORT:-8000}" \

@@ -19,13 +19,20 @@
 # authority, not this comment — report it back for a fix rather than
 # assuming this file is correct sight unseen.
 #
-# Migrations are still never run implicitly (see docker-entrypoint.sh) —
-# preDeployCommand below runs `alembic upgrade head` once per deploy,
-# after a successful build, before the new version receives traffic. If
-# your Render plan doesn't support preDeployCommand, see
-# docs/PRODUCTION_DEPLOYMENT_VERIFICATION.md for the manual fallback
-# (temporarily set the service's Docker Command to `migrate`, deploy,
-# confirm it exits 0, then set it back to `serve`).
+# Migrations: preDeployCommand below runs `alembic upgrade head` once per
+# deploy, after a successful build, before the new version receives
+# traffic - this is the preferred mechanism where it's supported. Free/
+# starter web services don't reliably support preDeployCommand (and can't
+# run a one-off `migrate` Docker Command either - a command that runs
+# alembic and exits gets treated as a crashed deploy, since the platform
+# expects the container to stay up and bind $PORT). RUN_MIGRATIONS_ON_START
+# below is docker-entrypoint.sh's opt-in fallback for exactly that case:
+# `serve` runs `alembic upgrade head` itself before starting uvicorn. This
+# is only safe for a single-instance deployment (see docker-entrypoint.sh's
+# comment on the multi-replica race it would otherwise reintroduce) - this
+# service has no autoscaling/multiple instances configured, so it's safe
+# here. If this service is ever scaled to multiple instances, remove this
+# env var and rely on preDeployCommand (or a one-off Job) instead.
 
 databases:
   - name: content-factory-db
@@ -79,6 +86,8 @@ services:
         value: "silent"
       - key: RENDERER_BACKEND
         value: "null"
+      - key: RUN_MIGRATIONS_ON_START
+        value: "true"
       - key: PUBLISHING_ENABLED
         value: "true"
       - key: RATE_LIMIT_BACKEND
