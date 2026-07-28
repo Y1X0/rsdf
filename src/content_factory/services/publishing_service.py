@@ -12,8 +12,8 @@ Mirrors production_service.py's shape: the Publication row is created
 first (so a failure still leaves a durable, auditable row), the risky
 provider call is wrapped in `agent_run` for the same versioning/logging
 guarantee every other external call gets, and a retry-with-backoff wrapper
-(publishing/retry.py) closes PHASE1_AUDIT_v2.md's F19 for this codebase's
-first real external HTTP integration.
+(content_factory/retry.py) closes PHASE1_AUDIT_v2.md's F19 for this
+codebase's first real external HTTP integration.
 """
 
 import time
@@ -30,7 +30,7 @@ from content_factory.db.models.publication import Publication
 from content_factory.db.models.video import Video
 from content_factory.logging_config import get_logger
 from content_factory.publishing.base import PublishingProvider, PublishRequest
-from content_factory.publishing.retry import call_with_retry
+from content_factory.retry import call_with_retry
 from content_factory.services import token_encryption
 
 logger = get_logger(__name__)

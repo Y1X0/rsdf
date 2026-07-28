@@ -10,7 +10,7 @@ from content_factory.publishing.base import PublishRequest
 from content_factory.publishing.providers.instagram_provider import InstagramPublishingProvider
 from content_factory.publishing.providers.tiktok_provider import TikTokPublishingProvider
 from content_factory.publishing.providers.youtube_provider import YouTubePublishingProvider
-from content_factory.publishing.retry import RetryableProviderError
+from content_factory.retry import RetryableProviderError
 
 
 class _FakeResponse:

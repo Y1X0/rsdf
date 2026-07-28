@@ -9,6 +9,7 @@ falls back to "silent" otherwise).
 import time
 from pathlib import Path
 
+from content_factory.retry import RetryableProviderError, call_with_retry
 from content_factory.video_production.captions import even_word_timings
 from content_factory.video_production.tts.base import TTSProvider, TTSResult
 
@@ -32,14 +33,35 @@ class ElevenLabsTTSProvider(TTSProvider):
                 "pip install '.[elevenlabs]'"
             ) from exc
 
+        def _call():
+            try:
+                response = httpx.post(
+                    _API_URL_TEMPLATE.format(voice_id=voice_id),
+                    headers={"xi-api-key": self._api_key},
+                    json={"text": text},
+                    timeout=60.0,
+                )
+            except httpx.TimeoutException as exc:
+                raise RetryableProviderError(f"ElevenLabs request timed out: {exc}") from exc
+            except httpx.RequestError as exc:
+                raise RuntimeError(f"ElevenLabs request failed: {exc}") from exc
+            if response.status_code >= 500:
+                raise RetryableProviderError(f"ElevenLabs API returned {response.status_code}")
+            return response
+
         start = time.monotonic()
-        response = httpx.post(
-            _API_URL_TEMPLATE.format(voice_id=voice_id),
-            headers={"xi-api-key": self._api_key},
-            json={"text": text},
-            timeout=60.0,
-        )
-        response.raise_for_status()
+        # Transient-only (5xx/timeout): a 4xx (bad key, invalid voice_id)
+        # retrying would just waste attempts on an error retrying can't
+        # fix - see content_factory/retry.py.
+        response = call_with_retry(_call)
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            # Same reasoning as groq_provider.py's own error wrapping: the
+            # real response body is the only thing that explains *why*
+            # wherever agent_runs.error_message ends up being the only
+            # record of the failure.
+            raise RuntimeError(f"ElevenLabs API error (HTTP {response.status_code}): {response.text}") from exc
 
         self._storage_dir.mkdir(parents=True, exist_ok=True)
         audio_path = self._storage_dir / f"elevenlabs_{abs(hash(text)) % 10_000_000}.mp3"

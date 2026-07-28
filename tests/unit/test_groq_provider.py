@@ -114,6 +114,61 @@ def test_complete_wraps_connection_failures_too(monkeypatch):
         client.complete(system="s", prompt="p")
 
 
+def test_complete_retries_on_5xx_then_succeeds(monkeypatch):
+    """PHASE1_AUDIT_v2.md F19 (retry/backoff around external provider
+    calls) had never been applied to the LLM providers themselves - every
+    real script/hook generation call would fail outright on one transient
+    Groq hiccup instead of quietly recovering, the same gap already closed
+    for the publishing/analytics-ingestion providers."""
+    calls = {"count": 0}
+
+    def _fake_post(*a, **k):
+        calls["count"] += 1
+        if calls["count"] < 2:
+            return _FakeResponse(503, {})
+        return _FakeResponse(200, _chat_completion_body("recovered"))
+
+    monkeypatch.setattr(httpx, "post", _fake_post)
+    client = GroqLLMClient(api_key="gsk-test-key", model="llama-3.3-70b-versatile")
+    response = client.complete(system="s", prompt="p")
+
+    assert response.text == "recovered"
+    assert calls["count"] == 2
+
+
+def test_complete_retries_on_timeout_then_succeeds(monkeypatch):
+    calls = {"count": 0}
+
+    def _fake_post(*a, **k):
+        calls["count"] += 1
+        if calls["count"] < 2:
+            raise httpx.TimeoutException("timed out")
+        return _FakeResponse(200, _chat_completion_body("recovered"))
+
+    monkeypatch.setattr(httpx, "post", _fake_post)
+    client = GroqLLMClient(api_key="gsk-test-key", model="llama-3.3-70b-versatile")
+    response = client.complete(system="s", prompt="p")
+
+    assert response.text == "recovered"
+    assert calls["count"] == 2
+
+
+def test_complete_does_not_retry_on_4xx(monkeypatch):
+    """A bad API key or a decommissioned model won't fix itself on retry -
+    retrying would just waste attempts, so a 4xx must fail immediately."""
+    calls = {"count": 0}
+
+    def _fake_post(*a, **k):
+        calls["count"] += 1
+        return _FakeResponse(401, {"error": {"message": "invalid api key"}})
+
+    monkeypatch.setattr(httpx, "post", _fake_post)
+    client = GroqLLMClient(api_key="bad-key", model="llama-3.3-70b-versatile")
+    with pytest.raises(RuntimeError):
+        client.complete(system="s", prompt="p")
+    assert calls["count"] == 1
+
+
 def test_complete_handles_empty_content_without_crashing(monkeypatch):
     monkeypatch.setattr(
         httpx,

@@ -6,7 +6,7 @@ against mocked HTTP responses only.
 """
 
 from content_factory.analytics_ingestion.base import AnalyticsFetchResult, PlatformAnalyticsProvider
-from content_factory.publishing.retry import RetryableProviderError
+from content_factory.retry import RetryableProviderError
 
 _VIDEOS_URL = "https://www.googleapis.com/youtube/v3/videos"
 

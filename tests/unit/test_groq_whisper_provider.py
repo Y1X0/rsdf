@@ -12,6 +12,9 @@ class _FakeResponse:
     def __init__(self, status_code: int, json_body: dict):
         self.status_code = status_code
         self._json_body = json_body
+        import json as _json
+
+        self.text = _json.dumps(json_body)
 
     def json(self) -> dict:
         return self._json_body
@@ -119,13 +122,99 @@ def test_transcribe_skips_a_malformed_word_item_instead_of_crashing(tmp_path, mo
     assert len(result.words) == 2  # the 2 well-formed ones survive; the bad one is skipped
 
 
-def test_transcribe_raises_on_http_error_status(tmp_path, monkeypatch):
+def test_transcribe_raises_a_runtime_error_carrying_groqs_actual_error_body_on_http_error_status(tmp_path, monkeypatch):
+    """Same reasoning as test_groq_provider.py's own regression test: a bare
+    httpx.HTTPStatusError's str() carries no hint of *why* (bad key,
+    unsupported audio format) - the real response body is the only thing
+    that explains it wherever agent_runs.error_message ends up being the
+    only record of the failure."""
     audio_path = tmp_path / "audio.mp4"
     audio_path.write_bytes(b"fake-bytes")
     monkeypatch.setattr(httpx, "post", lambda *a, **k: _FakeResponse(401, {"error": "invalid api key"}))
     provider = GroqWhisperProvider(api_key="bad-key", model="whisper-large-v3")
 
-    with pytest.raises(httpx.HTTPStatusError):
+    with pytest.raises(RuntimeError) as exc_info:
+        provider.transcribe(str(audio_path))
+    assert "401" in str(exc_info.value)
+    assert "invalid api key" in str(exc_info.value)
+
+
+def test_transcribe_retries_on_5xx_then_succeeds(tmp_path, monkeypatch):
+    """PHASE1_AUDIT_v2.md F19 (retry/backoff around external provider
+    calls) had never been applied to transcription - a real source-video
+    transcription call would fail outright on one transient Groq hiccup
+    instead of quietly recovering, the same gap already closed for
+    publishing/analytics-ingestion/LLM providers."""
+    audio_path = tmp_path / "audio.mp4"
+    audio_path.write_bytes(b"fake-bytes")
+    calls = {"count": 0}
+
+    def _fake_post(*a, **k):
+        calls["count"] += 1
+        if calls["count"] < 2:
+            return _FakeResponse(503, {})
+        return _FakeResponse(200, _verbose_json_body())
+
+    monkeypatch.setattr(httpx, "post", _fake_post)
+    provider = GroqWhisperProvider(api_key="gsk-test-key", model="whisper-large-v3")
+    result = provider.transcribe(str(audio_path))
+
+    assert result.text == "hello world"
+    assert calls["count"] == 2
+
+
+def test_transcribe_retries_on_timeout_then_succeeds(tmp_path, monkeypatch):
+    audio_path = tmp_path / "audio.mp4"
+    audio_path.write_bytes(b"fake-bytes")
+    calls = {"count": 0}
+
+    def _fake_post(*a, **k):
+        calls["count"] += 1
+        if calls["count"] < 2:
+            raise httpx.TimeoutException("timed out")
+        return _FakeResponse(200, _verbose_json_body())
+
+    monkeypatch.setattr(httpx, "post", _fake_post)
+    provider = GroqWhisperProvider(api_key="gsk-test-key", model="whisper-large-v3")
+    result = provider.transcribe(str(audio_path))
+
+    assert result.text == "hello world"
+    assert calls["count"] == 2
+
+
+def test_transcribe_does_not_retry_on_4xx(tmp_path, monkeypatch):
+    """A bad API key or unsupported audio format won't fix itself on
+    retry - retrying would just waste attempts, so a 4xx must fail
+    immediately."""
+    audio_path = tmp_path / "audio.mp4"
+    audio_path.write_bytes(b"fake-bytes")
+    calls = {"count": 0}
+
+    def _fake_post(*a, **k):
+        calls["count"] += 1
+        return _FakeResponse(401, {"error": "invalid api key"})
+
+    monkeypatch.setattr(httpx, "post", _fake_post)
+    provider = GroqWhisperProvider(api_key="bad-key", model="whisper-large-v3")
+    with pytest.raises(RuntimeError):
+        provider.transcribe(str(audio_path))
+    assert calls["count"] == 1
+
+
+def test_transcribe_wraps_connection_failures_too(tmp_path, monkeypatch):
+    """Regression test: this provider previously had zero error handling
+    around the network call at all - a bare httpx.ConnectError would have
+    propagated completely uncaught instead of becoming a clear,
+    diagnosable RuntimeError."""
+    audio_path = tmp_path / "audio.mp4"
+    audio_path.write_bytes(b"fake-bytes")
+
+    def _raise_connect_error(*a, **k):
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(httpx, "post", _raise_connect_error)
+    provider = GroqWhisperProvider(api_key="gsk-test-key", model="whisper-large-v3")
+    with pytest.raises(RuntimeError, match="Groq transcription request failed"):
         provider.transcribe(str(audio_path))
 
 

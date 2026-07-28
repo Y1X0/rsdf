@@ -11,7 +11,7 @@ access is actually provisioned and validated end-to-end.
 """
 
 from content_factory.publishing.base import PublishingProvider, PublishRequest, PublishResult
-from content_factory.publishing.retry import RetryableProviderError
+from content_factory.retry import RetryableProviderError
 
 _PUBLISH_URL = "https://open.tiktokapis.com/v2/post/publish/video/init/"
 

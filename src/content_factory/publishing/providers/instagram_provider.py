@@ -17,7 +17,7 @@ to it.
 import time
 
 from content_factory.publishing.base import PublishingProvider, PublishRequest, PublishResult
-from content_factory.publishing.retry import RetryableProviderError
+from content_factory.retry import RetryableProviderError
 
 _API_VERSION = "v21.0"
 _MEDIA_URL_TEMPLATE = f"https://graph.facebook.com/{_API_VERSION}/{{account_id}}/media"

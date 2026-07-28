@@ -10,7 +10,7 @@ from content_factory.analytics_ingestion.providers.instagram_provider import Ins
 from content_factory.analytics_ingestion.providers.manual_provider import ManualAnalyticsProvider
 from content_factory.analytics_ingestion.providers.tiktok_provider import TikTokAnalyticsProvider
 from content_factory.analytics_ingestion.providers.youtube_provider import YouTubeAnalyticsProvider
-from content_factory.publishing.retry import RetryableProviderError
+from content_factory.retry import RetryableProviderError
 
 
 class _FakeResponse:

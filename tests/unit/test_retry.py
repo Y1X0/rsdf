@@ -1,9 +1,10 @@
-"""Phase 2 M4 (PHASE1_AUDIT_v2.md F19): retry-with-backoff around external
-provider calls."""
+"""Retry-with-backoff (PHASE1_AUDIT_v2.md F19), shared by every real
+external HTTP provider (publishing, analytics ingestion, LLM,
+transcription, TTS)."""
 
 import pytest
 
-from content_factory.publishing.retry import RetryableProviderError, call_with_retry
+from content_factory.retry import RetryableProviderError, call_with_retry
 
 
 def test_call_with_retry_returns_immediately_on_success():

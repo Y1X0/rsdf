@@ -14,6 +14,7 @@ needs to pick moments out of the source video's timeline.
 import time
 from pathlib import Path
 
+from content_factory.retry import RetryableProviderError, call_with_retry
 from content_factory.transcription.base import (
     TranscriptionProvider,
     TranscriptionResult,
@@ -44,32 +45,60 @@ class GroqWhisperProvider(TranscriptionProvider):
                 "GroqWhisperProvider requires the 'groq' extra: pip install '.[groq]'"
             ) from exc
 
-        start = time.monotonic()
         path = Path(audio_path)
-        with path.open("rb") as f:
-            response = httpx.post(
-                _TRANSCRIPTIONS_URL,
-                headers={"Authorization": f"Bearer {self._api_key}"},
-                # A plain dict can only hold one value per key, but
-                # requesting both granularities means sending
-                # "timestamp_granularities[]" twice - a list of tuples is
-                # httpx's (and requests') way of encoding repeated form
-                # fields. Both explicitly requested (rather than relying on
-                # segment-level being some implicit default) so the
-                # response's `words` array - real per-word timing, not
-                # something derived after the fact - is never silently
-                # missing depending on the API's own default behavior.
-                data=[
-                    ("model", self._model),
-                    ("response_format", "verbose_json"),
-                    ("timestamp_granularities[]", "segment"),
-                    ("timestamp_granularities[]", "word"),
-                ],
-                files={"file": (path.name, f, "application/octet-stream")},
-                timeout=300.0,
-            )
+
+        def _call():
+            # Re-opened on every attempt (including retries): a file handle
+            # already partially consumed by a failed/aborted upload attempt
+            # can't just be re-sent as-is.
+            with path.open("rb") as f:
+                try:
+                    response = httpx.post(
+                        _TRANSCRIPTIONS_URL,
+                        headers={"Authorization": f"Bearer {self._api_key}"},
+                        # A plain dict can only hold one value per key, but
+                        # requesting both granularities means sending
+                        # "timestamp_granularities[]" twice - a list of
+                        # tuples is httpx's (and requests') way of encoding
+                        # repeated form fields. Both explicitly requested
+                        # (rather than relying on segment-level being some
+                        # implicit default) so the response's `words` array
+                        # - real per-word timing, not something derived
+                        # after the fact - is never silently missing
+                        # depending on the API's own default behavior.
+                        data=[
+                            ("model", self._model),
+                            ("response_format", "verbose_json"),
+                            ("timestamp_granularities[]", "segment"),
+                            ("timestamp_granularities[]", "word"),
+                        ],
+                        files={"file": (path.name, f, "application/octet-stream")},
+                        timeout=300.0,
+                    )
+                except httpx.TimeoutException as exc:
+                    raise RetryableProviderError(f"Groq transcription request timed out: {exc}") from exc
+                except httpx.RequestError as exc:
+                    raise RuntimeError(f"Groq transcription request failed: {exc}") from exc
+            if response.status_code >= 500:
+                raise RetryableProviderError(f"Groq transcription API returned {response.status_code}")
+            return response
+
+        start = time.monotonic()
+        # Transient-only (5xx/timeout): a 4xx (bad key, unsupported audio
+        # format) retrying would just waste attempts on an error retrying
+        # can't fix - see content_factory/retry.py.
+        response = call_with_retry(_call)
         duration_ms = int((time.monotonic() - start) * 1000)
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            # Same reasoning as groq_provider.py's own error wrapping: a
+            # bare httpx.HTTPStatusError's str() carries no hint of *why*
+            # (bad key, unsupported audio, file too large) - the real
+            # response body is the only thing that explains it wherever
+            # agent_runs.error_message/idempotency_records.error_message
+            # end up being the only record of the failure.
+            raise RuntimeError(f"Groq transcription API error (HTTP {response.status_code}): {response.text}") from exc
         payload = response.json()
 
         text = payload.get("text", "") or ""

@@ -16,6 +16,7 @@ one endpoint shape.
 import time
 
 from content_factory.llm.base import LLMClient, LLMResponse
+from content_factory.retry import RetryableProviderError, call_with_retry
 
 _CHAT_COMPLETIONS_URL = "https://api.groq.com/openai/v1/chat/completions"
 
@@ -44,23 +45,34 @@ class GroqLLMClient(LLMClient):
                 "GroqLLMClient requires the 'groq' extra: pip install '.[groq]'"
             ) from exc
 
+        def _call():
+            try:
+                response = httpx.post(
+                    _CHAT_COMPLETIONS_URL,
+                    headers={"Authorization": f"Bearer {self._api_key}"},
+                    json={
+                        "model": self._model,
+                        "max_tokens": max_tokens,
+                        "messages": [
+                            {"role": "system", "content": system},
+                            {"role": "user", "content": prompt},
+                        ],
+                    },
+                    timeout=60.0,
+                )
+            except httpx.TimeoutException as exc:
+                raise RetryableProviderError(f"Groq API request timed out: {exc}") from exc
+            except httpx.RequestError as exc:
+                raise RuntimeError(f"Groq API request failed: {exc}") from exc
+            if response.status_code >= 500:
+                raise RetryableProviderError(f"Groq API returned {response.status_code}")
+            return response
+
         start = time.monotonic()
-        try:
-            response = httpx.post(
-                _CHAT_COMPLETIONS_URL,
-                headers={"Authorization": f"Bearer {self._api_key}"},
-                json={
-                    "model": self._model,
-                    "max_tokens": max_tokens,
-                    "messages": [
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": prompt},
-                    ],
-                },
-                timeout=60.0,
-            )
-        except httpx.RequestError as exc:
-            raise RuntimeError(f"Groq API request failed: {exc}") from exc
+        # Transient-only (5xx/timeout): a 4xx (bad key, decommissioned
+        # model, rate limit) retrying would just waste attempts on an
+        # error retrying can't fix - see content_factory/retry.py.
+        response = call_with_retry(_call)
         duration_ms = int((time.monotonic() - start) * 1000)
         try:
             response.raise_for_status()

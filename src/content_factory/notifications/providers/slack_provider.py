@@ -20,9 +20,18 @@ class SlackNotificationProvider(NotificationProvider):
                 "pip install '.[notifications]'"
             ) from exc
 
-        response = httpx.post(
-            self._webhook_url,
-            json={"text": f"*[{request.severity.value.upper()}] {request.subject}*\n{request.body}"},
-            timeout=10.0,
-        )
+        try:
+            response = httpx.post(
+                self._webhook_url,
+                json={"text": f"*[{request.severity.value.upper()}] {request.subject}*\n{request.body}"},
+                timeout=10.0,
+            )
+        except httpx.RequestError:
+            # A notification is a best-effort side-channel, never the
+            # primary action - callers like budget_governor._maybe_alert()
+            # invoke this with no try/except of their own from the top of
+            # real cost-incurring endpoints (render, script generation), so
+            # a Slack outage must not crash the actual request. Matches
+            # EmailNotificationProvider's own OSError handling.
+            return NotificationResult(channel="slack", delivered=False)
         return NotificationResult(channel="slack", delivered=response.status_code < 300)

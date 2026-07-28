@@ -6,7 +6,7 @@ only.
 """
 
 from content_factory.analytics_ingestion.base import AnalyticsFetchResult, PlatformAnalyticsProvider
-from content_factory.publishing.retry import RetryableProviderError
+from content_factory.retry import RetryableProviderError
 
 _INSIGHTS_URL_TEMPLATE = "https://graph.facebook.com/v19.0/{media_id}/insights"
 

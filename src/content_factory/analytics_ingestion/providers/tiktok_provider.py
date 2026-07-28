@@ -7,7 +7,7 @@ against mocked HTTP responses only.
 """
 
 from content_factory.analytics_ingestion.base import AnalyticsFetchResult, PlatformAnalyticsProvider
-from content_factory.publishing.retry import RetryableProviderError
+from content_factory.retry import RetryableProviderError
 
 _QUERY_URL = "https://open.tiktokapis.com/v2/video/query/"
 

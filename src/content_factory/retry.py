@@ -1,10 +1,11 @@
-"""Retry-with-backoff for the first real external HTTP integrations this
-codebase makes (PHASE1_AUDIT_v2.md F19 — "no retry/backoff around external
-provider calls"). Bounded and simple: a fixed number of attempts,
-exponential backoff, retrying only on the transient failure signal a
-provider explicitly flags as worth retrying (5xx, timeout) — a 4xx (bad
-request, invalid credentials) retrying wouldn't help and would just waste
-API quota, so providers must raise something else for those.
+"""Retry-with-backoff for real external HTTP integrations (originally added
+for the first ones this codebase made — PHASE1_AUDIT_v2.md F19 — now shared
+across every package that calls a real external API: publishing, analytics
+ingestion, the LLM/transcription/TTS providers). Bounded and simple: a fixed
+number of attempts, exponential backoff, retrying only on the transient
+failure signal a provider explicitly flags as worth retrying (5xx, timeout)
+— a 4xx (bad request, invalid credentials) retrying wouldn't help and would
+just waste API quota, so providers must raise something else for those.
 """
 
 import time
