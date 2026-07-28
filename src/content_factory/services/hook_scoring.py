@@ -98,19 +98,43 @@ HOOK_FRAMEWORKS: dict[str, dict[str, str]] = {
 # high-performing short-form hooks across the curiosity-gap/pattern-
 # interrupt/shock-stat frameworks above - the same style of curated list
 # real headline-analysis tools use, not a claim of completeness.
+#
+# Arabic entries alongside the English ones (not a separate/replacement
+# list) - this platform's actual hooks are overwhelmingly Arabic/Levantine
+# colloquial (see ScriptAgent/ClipSelectionAgent's real usage), and an
+# English-only wordlist silently scored every real Arabic hook at 0 on
+# these two sub-scores regardless of quality. Same "curated, non-
+# exhaustive" bar as the English list, not a claim of completeness.
 _CURIOSITY_MARKERS = (
     "secret", "mistake", "nobody tells you", "here's why", "here's what",
     "the truth about", "stop", "never", "always", "one thing", "wait until",
     "wait for it", "you won't believe", "this is why", "turns out",
+    "سر", "السر", "غلطة", "الغلطة", "محدش", "ما حدا", "لسا ما", "الحقيقة",
+    "الحقيقه", "طلع", "توقف", "استنى", "ستنى", "خلص", "اكتشف", "اكتشفت",
+    "شو صار", "ليش", "مين قالك",
 )
 _POWER_WORDS = (
     "shocking", "proven", "instantly", "finally", "warning", "exclusive",
     "guaranteed", "easy", "free", "surprising", "secret", "banned", "insane",
+    "صادم", "صادمة", "مثبت", "مضمون", "فورا", "حصري", "تحذير", "مجاني",
+    "سهل", "خطير", "جنون", "جنوني", "مفاجأة", "مفاجئ", "ممنوع",
 )
 
-_WORD_RE = re.compile(r"[a-zA-Z']+")
-_SECOND_PERSON_RE = re.compile(r"\byou(r|rself)?\b", re.IGNORECASE)
+# \S+ (whitespace-delimited tokens) rather than an alpha-only character
+# class: the previous [a-zA-Z']+ only ever matched Latin script, so it
+# silently counted 0 words in any Arabic hook - length_score (25% of the
+# composite) was always 0 regardless of actual length. This is a rougher
+# per-language word count (punctuation can stay glued to a token) but
+# works the same way regardless of script, which matters more here.
+_WORD_RE = re.compile(r"\S+")
+# Arabic second-person pronouns alongside the English regex - "you/your"
+# alone matched nothing in Arabic text, so second_person_score (15% of
+# the composite) was always 0 for Arabic hooks regardless of phrasing.
+_SECOND_PERSON_RE = re.compile(
+    r"\byou(r|rself)?\b|أنت[ِمكِ]?|انت[ِمو]?ا?|إنت[ِمو]?ا?", re.IGNORECASE
+)
 _DIGIT_RE = re.compile(r"\d")
+_QUESTION_MARK_RE = re.compile(r"[?؟]\s*$")
 
 # A hook is spoken/read in roughly the first 1-3 seconds of a short-form
 # video - long enough to say ~5-12 words at a natural pace, not a whole
@@ -158,7 +182,7 @@ def score_hook_strength(hook_text: str) -> HookScoreResult:
     word_count = len(words)
 
     length_score = _length_score(word_count)
-    question_score = 1.0 if text.rstrip().endswith("?") else 0.0
+    question_score = 1.0 if _QUESTION_MARK_RE.search(text) else 0.0
     second_person_score = 1.0 if _SECOND_PERSON_RE.search(text) else 0.0
     number_score = 1.0 if _DIGIT_RE.search(text) else 0.0
     curiosity_marker_score = _marker_score(text_lower, _CURIOSITY_MARKERS)

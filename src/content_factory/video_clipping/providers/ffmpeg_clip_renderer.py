@@ -305,8 +305,19 @@ class FfmpegClipRenderer(ClipRenderer):
             captions_path = Path(tmp_dir) / "captions.ass"
             captions_path.write_text(captions_content, encoding="utf-8")
 
+            # setsar=1 closes a real (if cosmetic) artifact found via a live
+            # end-to-end run against a horizontal source: force_original_
+            # aspect_ratio=decrease's intermediate scale can round to a
+            # dimension ffmpeg can't express as exactly 9:16 in integer
+            # pixels, so it compensates by writing a slightly non-1:1 SAR
+            # into the output (e.g. DAR 76:135 instead of 9:16) even though
+            # the pixel dimensions are already exactly correct. Never
+            # visible and every platform re-processes uploads anyway, but
+            # there's no reason to ship a portrait short with any non-square
+            # pixel metadata at all.
             vf_parts = [f"scale={_FRAME_SIZE[0]}:{_FRAME_SIZE[1]}:force_original_aspect_ratio=decrease",
-                        f"pad={_FRAME_SIZE[0]}:{_FRAME_SIZE[1]}:(ow-iw)/2:(oh-ih)/2"]
+                        f"pad={_FRAME_SIZE[0]}:{_FRAME_SIZE[1]}:(ow-iw)/2:(oh-ih)/2",
+                        "setsar=1"]
             if has_events:
                 # ffmpeg filter-graph syntax treats ':' as an option separator,
                 # so a plain filesystem path (which may itself contain ':') must

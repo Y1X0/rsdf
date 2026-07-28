@@ -46,6 +46,14 @@ def _ffprobe_dimensions(ffmpeg_bin, path) -> tuple[int, int]:
     raise AssertionError(f"could not find video dimensions in ffmpeg output:\n{result.stderr}")
 
 
+def _ffprobe_video_line(ffmpeg_bin, path) -> str:
+    result = subprocess.run([ffmpeg_bin, "-i", str(path)], capture_output=True, text=True)
+    for line in result.stderr.splitlines():
+        if "Video:" in line:
+            return line
+    raise AssertionError(f"could not find a video stream in ffmpeg output:\n{result.stderr}")
+
+
 @pytest.fixture(scope="module")
 def sample_video(tmp_path_factory):
     """A real, tiny, generated video file — no external download, no
@@ -96,6 +104,50 @@ def test_render_actually_cuts_the_requested_range(tmp_path, sample_video):
     # got produced.
     width, height = _ffprobe_dimensions(imageio_ffmpeg.get_ffmpeg_exe(), asset_path)
     assert (width, height) == _FRAME_SIZE
+
+
+@pytest.fixture(scope="module")
+def widescreen_source_video(tmp_path_factory):
+    """A real 16:9 source, unlike `sample_video`'s 4:3 - fitting 4:3 into
+    the 540x960 target box happens to divide evenly (540x405, no
+    rounding), which is exactly why this real bug (found via a live
+    end-to-end run with an actual 1920x1080 source) went unnoticed by the
+    existing 4:3 fixture: 16:9 scaled to fit width=540 needs height=
+    540*1080/1920=303.75, a genuinely fractional target ffmpeg must round,
+    which is what actually exercises the SAR-compensation artifact."""
+    path = tmp_path_factory.mktemp("ffmpeg_clip_test_16x9") / "widescreen.mp4"
+    ffmpeg_bin = imageio_ffmpeg.get_ffmpeg_exe()
+    subprocess.run(
+        [
+            ffmpeg_bin, "-y",
+            "-f", "lavfi", "-i", "testsrc=size=1920x1080:rate=10",
+            "-f", "lavfi", "-i", "sine=frequency=440",
+            "-t", "10", "-pix_fmt", "yuv420p", str(path),
+        ],
+        check=True, capture_output=True,
+    )
+    return path
+
+
+def test_render_from_a_widescreen_source_produces_clean_square_pixel_output(tmp_path, widescreen_source_video):
+    """Regression test for a real artifact found via a live end-to-end run
+    with an actual horizontal (16:9) source: force_original_aspect_ratio=
+    decrease's intermediate scale can round to a dimension ffmpeg can't
+    express as exactly 9:16 in integer pixels, so without an explicit
+    setsar=1, ffmpeg wrote a slightly non-1:1 SAR into the output (DAR
+    76:135 instead of 9:16) even though the pixel dimensions (540x960)
+    were already exactly correct."""
+    renderer = FfmpegClipRenderer(storage_dir=tmp_path / "clips")
+    request = ClipRenderRequest(
+        clip_id=99, source_path=str(widescreen_source_video), start_s=1.0, end_s=4.0,
+        hook_text=None, transcript_segments=[],
+    )
+
+    result = renderer.render(request)
+
+    video_line = _ffprobe_video_line(imageio_ffmpeg.get_ffmpeg_exe(), result.asset_url)
+    assert "SAR 1:1" in video_line, video_line
+    assert f"DAR {_FRAME_SIZE[0] // 60}:{_FRAME_SIZE[1] // 60}" in video_line, video_line
 
 
 def test_render_without_hook_or_segments_still_produces_a_real_file(tmp_path, sample_video):

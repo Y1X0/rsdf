@@ -46,6 +46,37 @@ def test_very_long_hook_is_penalized_for_length():
     assert score_hook_strength(long_hook).length_score < score_hook_strength(short_ideal_hook).length_score
 
 
+def test_arabic_hook_word_count_is_not_silently_zero():
+    """Regression test for a real bug found via a live end-to-end pipeline
+    run: the old word-counting regex ([a-zA-Z']+) only ever matched Latin
+    script, so length_score (25% of the composite) was always 0 for any
+    Arabic hook regardless of actual length - this platform's real hooks
+    are overwhelmingly Arabic/Levantine, so this silently tanked almost
+    every real score."""
+    result = score_hook_strength("90% من الناس بيفشلوا بأول أسبوع لهاد السبب بالضبط")
+    assert result.length_score == 1.0
+
+
+def test_arabic_question_mark_is_detected():
+    assert score_hook_strength("هل بتعمل هاد الغلطة كل مرة؟").question_score == 1.0
+    assert score_hook_strength("هاد الغلطة يلي بتعملها كل مرة.").question_score == 0.0
+
+
+def test_arabic_second_person_address_is_detected():
+    assert score_hook_strength("هل أنت بتعمل هاد الغلطة؟").second_person_score == 1.0
+    assert score_hook_strength("كتير ناس بتعمل هاد الغلطة").second_person_score == 0.0
+
+
+def test_arabic_curiosity_marker_detection():
+    result = score_hook_strength("السر يلي محدش بيحكيلك ياه")
+    assert result.curiosity_marker_score > 0.0
+
+
+def test_arabic_power_word_detection():
+    result = score_hook_strength("رقم صادم ومثبت علميًا")
+    assert result.power_word_score > 0.0
+
+
 def test_hook_frameworks_taxonomy_is_well_formed():
     assert len(HOOK_FRAMEWORKS) >= 8
     for key, framework in HOOK_FRAMEWORKS.items():
