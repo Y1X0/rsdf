@@ -173,6 +173,38 @@ def test_render_clip_is_idempotent(client):
     assert first.json()["id"] == second.json()["id"]
 
 
+def test_render_clip_rejects_a_second_render_without_matching_idempotency_key(client):
+    """Real gap idempotency keys alone don't cover: a *different* request
+    (a new/different idempotency_key, e.g. a client that doesn't reuse the
+    same key across a retry) against a clip that's already rendered used
+    to silently create a second Video row colliding on the same output
+    file path (clip_{id}.mp4) as the first - see
+    clip_service.ClipAlreadyRendered. Two calls with no key at all don't
+    reproduce this (the fingerprint computed from the identical payload
+    itself becomes the idempotency key, so the second is correctly
+    replayed) - it's specifically a *different* key pointing at the same
+    already-rendered clip that idempotency has no way to catch."""
+    created = _upload_source_video(client).json()
+
+    from content_factory.db.models.clip import Clip
+
+    db = client.db_session_factory()
+    try:
+        clip = Clip(source_video_id=created["id"], start_s=0.0, end_s=5.0)
+        db.add(clip)
+        db.commit()
+        clip_id = clip.id
+    finally:
+        db.close()
+
+    first = client.post(f"/clips/{clip_id}/render", json={"idempotency_key": "attempt-1"})
+    assert first.status_code == 200
+
+    second = client.post(f"/clips/{clip_id}/render", json={"idempotency_key": "attempt-2"})
+    assert second.status_code == 409
+    assert "already been rendered" in second.json()["detail"]
+
+
 def test_source_video_endpoints_require_authentication(unauthenticated_client):
     resp = unauthenticated_client.get("/source-videos")
     assert resp.status_code == 401

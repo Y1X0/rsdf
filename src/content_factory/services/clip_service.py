@@ -200,6 +200,10 @@ def _run_clip_qc(*, asset_url: str, requested_duration_s: float, actual_duration
     return ("passed" if passed else "failed"), ("; ".join(checks) or "all automated checks passed")
 
 
+class ClipAlreadyRendered(Exception):
+    pass
+
+
 def render_clip(
     db: Session,
     *,
@@ -208,6 +212,23 @@ def render_clip(
     clip_renderer: ClipRenderer,
     media_backup_provider: MediaBackupProvider | None = None,
 ) -> Video:
+    """Real bug found via a live end-to-end run: FfmpegClipRenderer (and
+    NullClipRenderer) both name the output file from clip.id alone
+    (clip_{id}.mp4), not video.id - calling this twice for the same clip
+    (e.g. a UI double-click, or a retry that didn't reuse the original
+    idempotency key) used to silently create a second Video row whose
+    asset_url pointed at the exact same path the first Video row already
+    claims, and the second render's output would silently overwrite it in
+    place - including after the first Video had already been reviewed or
+    published. Idempotency keys guard the "same request retried" case;
+    this guards the "different request, same already-rendered clip" case
+    idempotency keys can't see."""
+    if clip.status == ClipStatus.RENDERED:
+        raise ClipAlreadyRendered(
+            f"Clip {clip.id} has already been rendered; fetch its existing video via "
+            f"GET /source-videos/{source_video.id}/clips instead of rendering again."
+        )
+
     backup_provider = media_backup_provider or NullMediaBackupProvider()
     log = logger.bind(clip_id=clip.id, source_video_id=source_video.id)
 

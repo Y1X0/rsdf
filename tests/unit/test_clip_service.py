@@ -185,6 +185,40 @@ def test_render_clip_creates_video_row_reusing_existing_pipeline_fields(db_sessi
     assert clip.status == ClipStatus.RENDERED
 
 
+def test_render_clip_refuses_to_render_an_already_rendered_clip_again(db_session, tmp_media_dir):
+    """Real bug found via a live end-to-end run: the renderer names its
+    output file from clip.id alone (clip_{id}.mp4), not video.id - calling
+    render_clip twice for the same clip (a UI double-click, or a retry
+    that didn't reuse the original idempotency key) used to silently
+    create a second Video row whose asset_url pointed at the exact same
+    path the first Video row already claims, and the second render would
+    overwrite that file in place - even after the first Video had already
+    been reviewed or published."""
+    from content_factory.db.models.clip import Clip
+    from content_factory.services.clip_service import ClipAlreadyRendered
+
+    source_video = clip_service.register_source_video(
+        db_session, campaign_id=None, title="My Video", storage_path="/tmp/x.mp4"
+    )
+    source_video.transcript_segments = [{"start": 0.0, "end": 10.0, "text": "hello"}]
+    db_session.flush()
+
+    clip = Clip(source_video_id=source_video.id, start_s=1.0, end_s=6.0, hook_text="hook", status=ClipStatus.SUGGESTED)
+    db_session.add(clip)
+    db_session.flush()
+
+    renderer = NullClipRenderer(storage_dir=tmp_media_dir / "clips")
+    first_video = clip_service.render_clip(db_session, clip=clip, source_video=source_video, clip_renderer=renderer)
+
+    with pytest.raises(ClipAlreadyRendered):
+        clip_service.render_clip(db_session, clip=clip, source_video=source_video, clip_renderer=renderer)
+
+    # The first video's row must be completely unaffected by the refused
+    # second attempt.
+    db_session.refresh(first_video)
+    assert first_video.render_status == ProcessingStatus.COMPLETED
+
+
 def test_render_clip_replaces_asset_url_with_public_url_when_backup_provides_one(db_session, tmp_media_dir):
     """This is what actually closes the profit loop's storage blocker for
     the Clip Factory pipeline specifically: Video.asset_url must become

@@ -224,13 +224,16 @@ def render_clip(
             media_backup_provider=media_backup_provider,
         )
 
-    video, _created = idempotency.run_idempotent(
-        db,
-        scope="clip.render",
-        idempotency_key=payload.idempotency_key,
-        payload={"clip_id": clip_id},
-        entity_type="video",
-        work_fn=_work,
-        load_existing=_load_existing,
-    )
+    try:
+        video, _created = idempotency.run_idempotent(
+            db,
+            scope="clip.render",
+            idempotency_key=payload.idempotency_key,
+            payload={"clip_id": clip_id},
+            entity_type="video",
+            work_fn=_work,
+            load_existing=_load_existing,
+        )
+    except clip_service.ClipAlreadyRendered as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
     return to_video_out(db, video)
