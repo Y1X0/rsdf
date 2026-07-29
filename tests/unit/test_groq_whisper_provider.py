@@ -41,6 +41,59 @@ def _verbose_json_body(*, text="hello world", duration=12.5, include_words=True)
     return body
 
 
+def test_transcribe_sends_a_request_httpx_can_actually_encode_without_crashing(tmp_path, monkeypatch):
+    """Regression test for a real production incident, found via a live
+    end-to-end run: the previous code passed `data=` as a list of 2-tuples
+    (the `requests`-library convention for repeated form fields). httpx
+    only routes `data=` through its multipart/form encoder when it is a
+    Mapping - a non-Mapping `data` is silently treated as raw `content`
+    instead (with an easy-to-miss DeprecationWarning), dropping `files=`
+    entirely and then crashing inside httpx's own request.read() with
+    `TypeError: sequence item N: expected a bytes-like object, tuple
+    found` while trying to join the tuples as byte chunks. Every other
+    test in this file monkeypatches httpx.post itself with a fake
+    function, which captures the raw data=/files= kwargs but never
+    exercises httpx's actual encoder - exactly why this class of bug
+    survived every previous test run. This test instead swaps only the
+    network transport (httpx.MockTransport), so the real
+    encode_request/MultipartStream code path runs for real, and asserts
+    on the real wire-level multipart body httpx actually produced."""
+    audio_path = tmp_path / "audio.mp4"
+    audio_path.write_bytes(b"fake-bytes")
+
+    captured_bodies = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured_bodies.append(request.read())
+        return httpx.Response(200, json=_verbose_json_body())
+
+    real_post = httpx.post
+
+    def _post_via_mock_transport(url, **kwargs):
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            return client.post(url, **kwargs)
+
+    monkeypatch.setattr(httpx, "post", _post_via_mock_transport)
+    provider = GroqWhisperProvider(api_key="gsk-test-key", model="whisper-large-v3")
+
+    result = provider.transcribe(str(audio_path))
+
+    assert result.text == "hello world"
+    assert len(captured_bodies) == 1
+    body_text = captured_bodies[0].decode(errors="replace")
+    assert 'name="model"' in body_text
+    assert "whisper-large-v3" in body_text
+    # Both granularities must survive as separate multipart fields - not
+    # silently collapsed to just one, and not dropped along with `files=`.
+    assert body_text.count('name="timestamp_granularities[]"') == 2
+    assert "segment" in body_text
+    assert "word" in body_text
+    assert 'name="file"; filename="audio.mp4"' in body_text
+    assert "fake-bytes" in body_text
+
+    monkeypatch.setattr(httpx, "post", real_post)
+
+
 def test_transcribe_returns_genuine_text_and_marks_provider_as_groq(tmp_path, monkeypatch):
     audio_path = tmp_path / "audio.mp4"
     audio_path.write_bytes(b"not-a-real-video-just-test-bytes")
@@ -83,13 +136,16 @@ def test_transcribe_sends_the_configured_model_and_real_multipart_shape(tmp_path
 
     assert captured["url"] == "https://api.groq.com/openai/v1/audio/transcriptions"
     assert captured["headers"]["Authorization"] == "Bearer gsk-test-key"
-    # data is a list of tuples (not a dict) specifically so
-    # "timestamp_granularities[]" can be sent twice - both "segment" and
-    # "word" explicitly requested, not left to an API default.
-    assert ("model", "whisper-large-v3") in captured["data"]
-    assert ("response_format", "verbose_json") in captured["data"]
-    assert ("timestamp_granularities[]", "segment") in captured["data"]
-    assert ("timestamp_granularities[]", "word") in captured["data"]
+    # data must be a Mapping (httpx only routes it through its
+    # multipart/form encoder when it is one - see
+    # test_transcribe_sends_a_request_httpx_can_actually_encode_without_crashing
+    # for the regression test proving this at the real-encoding level), with
+    # "timestamp_granularities[]" as a list value so it can be sent twice -
+    # both "segment" and "word" explicitly requested, not left to an API
+    # default.
+    assert captured["data"]["model"] == "whisper-large-v3"
+    assert captured["data"]["response_format"] == "verbose_json"
+    assert captured["data"]["timestamp_granularities[]"] == ["segment", "word"]
     assert "file" in captured["files"]
 
 

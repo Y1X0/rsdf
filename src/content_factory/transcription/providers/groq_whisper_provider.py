@@ -56,22 +56,27 @@ class GroqWhisperProvider(TranscriptionProvider):
                     response = httpx.post(
                         _TRANSCRIPTIONS_URL,
                         headers={"Authorization": f"Bearer {self._api_key}"},
-                        # A plain dict can only hold one value per key, but
-                        # requesting both granularities means sending
-                        # "timestamp_granularities[]" twice - a list of
-                        # tuples is httpx's (and requests') way of encoding
-                        # repeated form fields. Both explicitly requested
+                        # Real bug found via a live production run: httpx's
+                        # `data=` only goes through its form/multipart
+                        # encoder when it's a Mapping - a plain list of
+                        # tuples (the `requests`-library convention this
+                        # used to follow) is instead silently treated as
+                        # raw `content`, which drops `files=` entirely and
+                        # then crashes trying to join the tuples as byte
+                        # chunks ("sequence item N: expected a bytes-like
+                        # object, tuple found"). httpx's own way to send a
+                        # repeated field is a dict value that is itself a
+                        # list - both granularities requested explicitly
                         # (rather than relying on segment-level being some
                         # implicit default) so the response's `words` array
                         # - real per-word timing, not something derived
                         # after the fact - is never silently missing
                         # depending on the API's own default behavior.
-                        data=[
-                            ("model", self._model),
-                            ("response_format", "verbose_json"),
-                            ("timestamp_granularities[]", "segment"),
-                            ("timestamp_granularities[]", "word"),
-                        ],
+                        data={
+                            "model": self._model,
+                            "response_format": "verbose_json",
+                            "timestamp_granularities[]": ["segment", "word"],
+                        },
                         files={"file": (path.name, f, "application/octet-stream")},
                         timeout=300.0,
                     )
