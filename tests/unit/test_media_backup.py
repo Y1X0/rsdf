@@ -8,6 +8,7 @@ publishing_service.py refuses to publish without."""
 from content_factory.config import Settings
 from content_factory.services import media_backup
 from content_factory.services.media_backup import (
+    LocalDiskMediaBackupProvider,
     NullMediaBackupProvider,
     S3MediaBackupProvider,
     backup_and_get_public_url,
@@ -228,3 +229,57 @@ def test_no_prefix_uses_bare_filename(monkeypatch, tmp_path):
 def test_module_import_is_clean():
     # media_backup module itself must not require boto3 at import time.
     assert hasattr(media_backup, "get_media_backup_provider")
+
+
+def test_factory_uses_local_disk_provider_when_no_bucket_but_public_base_url_set():
+    """The zero-cost alternative to S3: no bucket configured, but a public
+    base URL pointing at this app's own /public-media route is - no cloud
+    storage account or payment required."""
+    settings = Settings(
+        media_backup_enabled=True,
+        media_backup_s3_bucket="",
+        media_backup_public_base_url="https://content-factory-example.onrender.com/public-media",
+    )
+    provider = get_media_backup_provider(settings)
+    assert isinstance(provider, LocalDiskMediaBackupProvider)
+
+
+def test_local_disk_provider_computes_public_url_for_file_under_storage_dir(tmp_path):
+    storage_dir = tmp_path / "media"
+    clips_dir = storage_dir / "clips"
+    clips_dir.mkdir(parents=True)
+    local_file = clips_dir / "clip_8.mp4"
+    local_file.write_bytes(b"fake video bytes")
+
+    provider = LocalDiskMediaBackupProvider(
+        storage_dir=str(storage_dir), public_base_url="https://example.onrender.com/public-media"
+    )
+    result = provider.backup(str(local_file))
+
+    assert result.backed_up is True
+    assert result.public_url == "https://example.onrender.com/public-media/clips/clip_8.mp4"
+
+
+def test_local_disk_provider_skips_missing_local_file(tmp_path):
+    storage_dir = tmp_path / "media"
+    storage_dir.mkdir()
+    provider = LocalDiskMediaBackupProvider(
+        storage_dir=str(storage_dir), public_base_url="https://example.onrender.com/public-media"
+    )
+    result = provider.backup(str(storage_dir / "does-not-exist.mp4"))
+    assert result.backed_up is False
+    assert result.public_url is None
+
+
+def test_local_disk_provider_skips_file_outside_storage_dir(tmp_path):
+    storage_dir = tmp_path / "media"
+    storage_dir.mkdir()
+    outside_file = tmp_path / "outside.mp4"
+    outside_file.write_bytes(b"x")
+
+    provider = LocalDiskMediaBackupProvider(
+        storage_dir=str(storage_dir), public_base_url="https://example.onrender.com/public-media"
+    )
+    result = provider.backup(str(outside_file))
+    assert result.backed_up is False
+    assert result.public_url is None
