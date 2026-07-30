@@ -11,7 +11,7 @@ access is actually provisioned and validated end-to-end.
 """
 
 from content_factory.publishing.base import PublishingProvider, PublishRequest, PublishResult
-from content_factory.retry import RetryableProviderError
+from content_factory.retry import ProviderRequestRejected, RetryableProviderError, describe_http_error
 
 _PUBLISH_URL = "https://open.tiktokapis.com/v2/post/publish/video/init/"
 
@@ -48,8 +48,13 @@ class TikTokPublishingProvider(PublishingProvider):
             raise RetryableProviderError("TikTok publish request timed out") from exc
 
         if response.status_code >= 500:
-            raise RetryableProviderError(f"TikTok publish returned {response.status_code}")
-        response.raise_for_status()
+            raise RetryableProviderError(
+                f"TikTok publish returned {response.status_code}: {describe_http_error(response)}"
+            )
+        if response.status_code >= 400:
+            raise ProviderRequestRejected(
+                f"TikTok publish returned {response.status_code}: {describe_http_error(response)}"
+            )
 
         publish_id = response.json().get("data", {}).get("publish_id")
         return PublishResult(provider="tiktok", published=True, external_post_id=publish_id)

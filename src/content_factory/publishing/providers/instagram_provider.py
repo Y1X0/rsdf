@@ -17,7 +17,7 @@ to it.
 import time
 
 from content_factory.publishing.base import PublishingProvider, PublishRequest, PublishResult
-from content_factory.retry import RetryableProviderError
+from content_factory.retry import ProviderRequestRejected, RetryableProviderError, describe_http_error
 
 _API_VERSION = "v21.0"
 _MEDIA_URL_TEMPLATE = f"https://graph.facebook.com/{_API_VERSION}/{{account_id}}/media"
@@ -72,8 +72,13 @@ class InstagramPublishingProvider(PublishingProvider):
             raise RetryableProviderError("Instagram media container creation timed out") from exc
 
         if response.status_code >= 500:
-            raise RetryableProviderError(f"Instagram media container creation returned {response.status_code}")
-        response.raise_for_status()
+            raise RetryableProviderError(
+                f"Instagram media container creation returned {response.status_code}: {describe_http_error(response)}"
+            )
+        if response.status_code >= 400:
+            raise ProviderRequestRejected(
+                f"Instagram media container creation returned {response.status_code}: {describe_http_error(response)}"
+            )
         return response.json()["id"]
 
     def _wait_until_ready(self, httpx, *, creation_id: str) -> None:
@@ -88,8 +93,15 @@ class InstagramPublishingProvider(PublishingProvider):
                 raise RetryableProviderError("Instagram media container status check timed out") from exc
 
             if response.status_code >= 500:
-                raise RetryableProviderError(f"Instagram media container status check returned {response.status_code}")
-            response.raise_for_status()
+                raise RetryableProviderError(
+                    f"Instagram media container status check returned {response.status_code}: "
+                    f"{describe_http_error(response)}"
+                )
+            if response.status_code >= 400:
+                raise ProviderRequestRejected(
+                    f"Instagram media container status check returned {response.status_code}: "
+                    f"{describe_http_error(response)}"
+                )
 
             status_code = response.json().get("status_code")
             if status_code == "FINISHED":
@@ -117,6 +129,11 @@ class InstagramPublishingProvider(PublishingProvider):
             raise RetryableProviderError("Instagram media_publish call timed out") from exc
 
         if response.status_code >= 500:
-            raise RetryableProviderError(f"Instagram media_publish returned {response.status_code}")
-        response.raise_for_status()
+            raise RetryableProviderError(
+                f"Instagram media_publish returned {response.status_code}: {describe_http_error(response)}"
+            )
+        if response.status_code >= 400:
+            raise ProviderRequestRejected(
+                f"Instagram media_publish returned {response.status_code}: {describe_http_error(response)}"
+            )
         return response.json().get("id")

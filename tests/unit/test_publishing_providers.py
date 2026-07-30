@@ -10,13 +10,14 @@ from content_factory.publishing.base import PublishRequest
 from content_factory.publishing.providers.instagram_provider import InstagramPublishingProvider
 from content_factory.publishing.providers.tiktok_provider import TikTokPublishingProvider
 from content_factory.publishing.providers.youtube_provider import YouTubePublishingProvider
-from content_factory.retry import RetryableProviderError
+from content_factory.retry import ProviderRequestRejected, RetryableProviderError
 
 
 class _FakeResponse:
-    def __init__(self, status_code: int, json_body: dict):
+    def __init__(self, status_code: int, json_body: dict, text: str = ""):
         self.status_code = status_code
         self._json_body = json_body
+        self.text = text or str(json_body)
 
     def json(self) -> dict:
         return self._json_body
@@ -65,7 +66,7 @@ def test_tiktok_provider_raises_retryable_on_timeout(monkeypatch):
 
 def test_tiktok_provider_does_not_retry_on_4xx(monkeypatch):
     monkeypatch.setattr(httpx, "post", lambda *a, **k: _FakeResponse(401, {}))
-    with pytest.raises(httpx.HTTPStatusError):
+    with pytest.raises(ProviderRequestRejected):
         TikTokPublishingProvider(access_token="token").publish(_request())
 
 
@@ -158,3 +159,30 @@ def test_instagram_provider_raises_retryable_on_5xx_during_container_creation(mo
 def test_instagram_provider_defaults_account_id_to_me():
     provider = InstagramPublishingProvider(access_token="token")
     assert provider._account_id == "me"
+
+
+def test_instagram_provider_surfaces_the_real_graph_api_error_body_on_4xx(monkeypatch):
+    """Real production bug this closes: the first real Instagram publish
+    attempt failed with nothing more useful logged anywhere than "Client
+    error '400 Bad Request' for url '...'" - response.raise_for_status()
+    never includes the response body, which for the real Graph API is a
+    real, actionable {"error": {"message": ..., "code": ..., ...}} object.
+    This proves that message now reaches the raised exception."""
+    monkeypatch.setattr(
+        httpx,
+        "post",
+        lambda *a, **k: _FakeResponse(
+            400,
+            {"error": {"message": "Invalid parameter", "type": "OAuthException", "code": 100}},
+        ),
+    )
+    with pytest.raises(ProviderRequestRejected, match="Invalid parameter"):
+        InstagramPublishingProvider(access_token="token", account_id="123").publish(_request())
+
+
+def test_youtube_provider_does_not_retry_on_4xx_and_surfaces_body(monkeypatch):
+    monkeypatch.setattr(
+        httpx, "post", lambda *a, **k: _FakeResponse(403, {"error": {"message": "quotaExceeded"}})
+    )
+    with pytest.raises(ProviderRequestRejected, match="quotaExceeded"):
+        YouTubePublishingProvider(access_token="token").publish(_request())
