@@ -24,6 +24,27 @@ class RetryableProviderError(Exception):
     should propagate immediately without spending retry attempts on it."""
 
 
+class ProviderRequestRejected(Exception):
+    """A provider's own API rejected the request outright (4xx) — never
+    worth retrying, unlike RetryableProviderError above."""
+
+
+def describe_http_error(response) -> str:
+    """Real production bug this closes: a bare `response.raise_for_status()`
+    call raises httpx.HTTPStatusError with a generic "400 Bad Request for
+    url ..." message that never includes the response body - for a real
+    platform API (e.g. Meta Graph API's `{"error": {"message": ...,
+    "code": ..., "error_subcode": ...}}`), that body is the *only* thing
+    that actually explains what went wrong (invalid parameter, expired
+    token, unsupported media type, permissions, ...). First surfaced when
+    a real Instagram publish attempt failed with nothing more useful than
+    "Client error '400 Bad Request' for url '...'" logged anywhere."""
+    try:
+        return str(response.json())
+    except Exception:
+        return response.text
+
+
 def call_with_retry(
     fn: Callable[[], T],
     *,

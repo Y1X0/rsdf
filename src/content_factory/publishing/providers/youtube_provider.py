@@ -10,7 +10,7 @@ access is actually provisioned and validated end-to-end.
 """
 
 from content_factory.publishing.base import PublishingProvider, PublishRequest, PublishResult
-from content_factory.retry import RetryableProviderError
+from content_factory.retry import ProviderRequestRejected, RetryableProviderError, describe_http_error
 
 _UPLOAD_URL = "https://www.googleapis.com/upload/youtube/v3/videos"
 
@@ -50,8 +50,13 @@ class YouTubePublishingProvider(PublishingProvider):
             raise RetryableProviderError("YouTube upload request timed out") from exc
 
         if response.status_code >= 500:
-            raise RetryableProviderError(f"YouTube upload returned {response.status_code}")
-        response.raise_for_status()
+            raise RetryableProviderError(
+                f"YouTube upload returned {response.status_code}: {describe_http_error(response)}"
+            )
+        if response.status_code >= 400:
+            raise ProviderRequestRejected(
+                f"YouTube upload returned {response.status_code}: {describe_http_error(response)}"
+            )
 
         video_id = response.json().get("id")
         return PublishResult(provider="youtube", published=True, external_post_id=video_id)
