@@ -47,7 +47,7 @@ def _decrypt_access_token(account: OwnedAccount, settings: Settings) -> str | No
         return None
     try:
         return token_encryption.decrypt_token(account.encrypted_oauth_token, settings)
-    except (ValueError, token_encryption.TokenEncryptionNotConfigured) as exc:
+    except (ValueError, token_encryption.TokenEncryptionError) as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from None
 
 
