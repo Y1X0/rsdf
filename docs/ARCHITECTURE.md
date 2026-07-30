@@ -934,7 +934,7 @@ exercised against a live API yet.
 | **TikTok Creative Center** | Trend data | Mostly public web data, not a formal API — scraping-based |
 | **YouTube Data API v3** | Upload, metadata | Default quota ~10,000 units/day; a single upload costs ~1,600 units → roughly 6 uploads/day/project without a quota increase request |
 | **YouTube Analytics API** | Performance metrics | Separate from Data API, needs its own OAuth scope |
-| **Instagram Graph API (Content Publishing)** | Reels publishing | Requires Instagram Professional account linked to a Facebook Page, Meta App Review for public use, ~25–100 posts/24h/account limits |
+| **Instagram Graph API (Content Publishing)** | Reels publishing | This codebase's `publishing/providers/instagram_provider.py` targets **Instagram API with Instagram Login** (`graph.instagram.com`, token issued directly to the Instagram account — no Facebook Page needed); the alternative "Facebook Login for Business" flow (`graph.facebook.com`, Page-linked) is a different Meta product with a different token format and is not what's implemented here. Meta App Review for public use, ~25–100 posts/24h/account limits either way |
 | **Anthropic Claude API** | Research/script reasoning agents | Primary LLM |
 | **ElevenLabs (or equivalent TTS)** | Voiceover generation | Per-character/minute pricing |
 | **Whisper (OpenAI or self-hosted)** | Word-level caption timing | Self-hosting viable at scale to cut cost |

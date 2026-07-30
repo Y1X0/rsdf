@@ -1,7 +1,21 @@
-"""Real Instagram Graph API provider (Reels container publish). `httpx` is
-only imported here, lazily (install with `pip install '.[publishing]'`).
-Selected only when Instagram credentials and a decrypted per-account access
-token are available (see publishing/factory.py).
+"""Real Instagram Graph API provider (Reels container publish), targeting
+**Instagram API with Instagram Login** — the standalone product where the
+access token is issued directly to the Instagram account (no Facebook Page
+required). `httpx` is only imported here, lazily (install with
+`pip install '.[publishing]'`). Selected only when Instagram credentials
+and a decrypted per-account access token are available (see
+publishing/factory.py).
+
+Real production bug this closes: this provider originally targeted the
+*other* Instagram integration - classic "Facebook Login for Business"
+(`graph.facebook.com`, a Facebook-Page-linked IG Business account). The
+first real production account was set up via Instagram Login instead
+(access tokens issued by that flow are prefixed `IGAA...`), and Meta
+rejected every request against `graph.facebook.com` with
+`{"error": {"message": "Invalid OAuth access token - Cannot parse access
+token", "code": 190}}` - that token format simply isn't valid for that
+host/product. Instagram API with Instagram Login uses its own host,
+`graph.instagram.com`, for the exact same three-call flow.
 
 Real Instagram video publishing is genuinely two Graph API calls, not one:
 create a media container (`POST /{ig-user-id}/media`, returns a
@@ -9,9 +23,10 @@ create a media container (`POST /{ig-user-id}/media`, returns a
 the video (`GET /{creation_id}?fields=status_code` — asynchronous; a
 freshly-created container is not immediately publishable), then
 `POST /{ig-user-id}/media_publish` with that `creation_id`. `account_id`
-must be the real numeric Instagram Business Account ID connected to a
-Facebook Page (`OwnedAccount.platform_account_id`) — "me" does not resolve
-to it.
+is the real numeric Instagram User ID (`OwnedAccount.platform_account_id`)
+obtained during the Instagram Login authorization flow — passed explicitly
+rather than relying on "me" so the same code path works regardless of
+which of Meta's two Instagram integrations a given token came from.
 """
 
 import time
@@ -20,9 +35,9 @@ from content_factory.publishing.base import PublishingProvider, PublishRequest, 
 from content_factory.retry import ProviderRequestRejected, RetryableProviderError, describe_http_error
 
 _API_VERSION = "v21.0"
-_MEDIA_URL_TEMPLATE = f"https://graph.facebook.com/{_API_VERSION}/{{account_id}}/media"
-_MEDIA_PUBLISH_URL_TEMPLATE = f"https://graph.facebook.com/{_API_VERSION}/{{account_id}}/media_publish"
-_CONTAINER_STATUS_URL_TEMPLATE = f"https://graph.facebook.com/{_API_VERSION}/{{creation_id}}"
+_MEDIA_URL_TEMPLATE = f"https://graph.instagram.com/{_API_VERSION}/{{account_id}}/media"
+_MEDIA_PUBLISH_URL_TEMPLATE = f"https://graph.instagram.com/{_API_VERSION}/{{account_id}}/media_publish"
+_CONTAINER_STATUS_URL_TEMPLATE = f"https://graph.instagram.com/{_API_VERSION}/{{creation_id}}"
 
 # A short-form clip should finish processing well within this window; bounded
 # so a stuck container can't hang the publish request forever. Tune upward

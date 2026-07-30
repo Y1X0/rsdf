@@ -24,10 +24,17 @@ into a chat/AI session; only into the terminal itself.
   `INSTAGRAM_APP_ID`/`INSTAGRAM_APP_SECRET` in Render's Environment tab —
   see `render.yaml`'s own comment on why this two-key gate exists in
   `publishing/factory.py`).
-- A real, valid Instagram long-lived access token from that same app.
-- The real numeric Instagram Business Account ID (`platform_account_id`
-  in the API below) — **not** the handle; Instagram's Graph API is
-  node-based and does not resolve `"me"` to your account (see
+- A real, valid access token issued via **Instagram API with Instagram
+  Login** (token prefixed `IGAA...`) — this is the flow
+  `publishing/providers/instagram_provider.py` targets
+  (`graph.instagram.com`). A token from the other Meta product,
+  "Facebook Login for Business" (Page-linked, `graph.facebook.com`), is a
+  different format and will fail with Meta's `"Invalid OAuth access
+  token - Cannot parse access token"` (code 190) against this provider —
+  a real failure mode this exact document's first live run hit.
+- The real numeric Instagram User ID (`platform_account_id` in the API
+  below) — **not** the handle; Instagram's Graph API is node-based and
+  does not resolve `"me"` to your account (see
   `publishing/providers/instagram_provider.py`).
 - A real `AUTH_CLIENT_SECRET` (from Render's Environment tab).
 
