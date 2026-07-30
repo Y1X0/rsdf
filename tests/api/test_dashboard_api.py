@@ -152,6 +152,31 @@ def test_health_endpoint_reports_the_resolved_clip_factory_pipeline_config(clien
         get_settings.cache_clear()
 
 
+def test_health_endpoint_reports_which_publishing_platforms_have_credentials_configured(client, monkeypatch):
+    """Real gap this closes: whether auto-publish reaches a real platform
+    provider or falls back to ManualPublishingProvider ("scheduled") used
+    to only be inferable after the fact, from one publish attempt's own
+    detail message. This makes the platform-level gate
+    (publishing/factory.py's _PLATFORM_CREDENTIAL_CHECK) visible from a
+    single unauthenticated GET, matching every other pipeline-config field
+    already in /health. Only booleans are ever reported - never the
+    credential values themselves."""
+    from content_factory.config import get_settings
+
+    monkeypatch.setenv("TIKTOK_CLIENT_KEY", "")
+    monkeypatch.setenv("YOUTUBE_CLIENT_ID", "")
+    monkeypatch.setenv("INSTAGRAM_APP_ID", "a-real-app-id")
+    get_settings.cache_clear()
+    try:
+        resp = client.get("/health")
+        assert resp.status_code == 200
+        creds = resp.json()["pipeline"]["publishing_platform_credentials_configured"]
+        assert creds == {"tiktok": False, "youtube": False, "instagram": True}
+        assert "a-real-app-id" not in resp.text
+    finally:
+        get_settings.cache_clear()
+
+
 def test_health_endpoint_pipeline_config_never_affects_the_liveness_status(client, monkeypatch):
     """A placeholder provider is a real configuration problem, but it is
     not the same thing as "this instance is unreachable" - Render's own
