@@ -1,0 +1,89 @@
+name: Register production account
+
+# One-time (or rare) admin action - NOT part of the recurring verification
+# pipeline, and never runs automatically. Registers a real publishing
+# account via POST /accounts against the live deployment, using GitHub's
+# own repository secrets so the real access token never has to pass
+# through a chat/AI session or a mobile terminal - see
+# docs/PRODUCTION_ACCOUNT_SETUP.md for why this is deliberately a manual
+# admin procedure, not a CI/CD step: re-running this is safe (the API
+# enforces a database-level unique constraint on platform+handle and
+# returns 409 rather than creating a duplicate - see
+# tests/api/test_accounts_api.py::test_duplicate_platform_handle_rejected),
+# but registering a real account is still a human decision, not something
+# that should fire on every push.
+#
+# One-time setup required before the first run (in addition to the
+# AUTH_CLIENT_SECRET already added for verify-production.yml): add a
+# repository secret named IG_ACCESS_TOKEN (Settings -> Secrets and
+# variables -> Actions -> New repository secret) with the real Instagram
+# long-lived access token. GitHub automatically redacts registered
+# secrets wherever they'd appear in this job's logs.
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: "Live deployment base URL"
+        required: true
+        default: "https://content-factory-bhhd.onrender.com"
+      auth_client_id:
+        description: "Auth client id"
+        required: true
+        default: "pilot-operator"
+      platform:
+        description: "Platform"
+        required: true
+        default: "instagram"
+      handle:
+        description: "Account handle (not secret - a display label)"
+        required: true
+        default: "sallehly1"
+      platform_account_id:
+        description: "Platform's own numeric/opaque account ID (e.g. the real Instagram Business Account ID)"
+        required: true
+        default: "17841440632369231"
+
+jobs:
+  register:
+    name: Register the account
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get an auth token
+        env:
+          BASE_URL: ${{ inputs.base_url }}
+          AUTH_CLIENT_ID: ${{ inputs.auth_client_id }}
+          AUTH_CLIENT_SECRET: ${{ secrets.AUTH_CLIENT_SECRET }}
+        run: |
+          TOKEN=$(curl -sS -X POST "$BASE_URL/auth/token" \
+            -H "content-type: application/json" \
+            --data "$(python3 -c 'import json,os; print(json.dumps({"client_id": os.environ["AUTH_CLIENT_ID"], "client_secret": os.environ["AUTH_CLIENT_SECRET"]}))')" \
+            | python3 -c "import sys,json;print(json.load(sys.stdin)['access_token'])")
+          if [ -z "$TOKEN" ]; then
+            echo "::error::Could not obtain an auth token - check AUTH_CLIENT_SECRET"
+            exit 1
+          fi
+          echo "TOKEN=$TOKEN" >> "$GITHUB_ENV"
+
+      - name: Register the account (safe to re-run - duplicates are rejected with 409, not created)
+        env:
+          BASE_URL: ${{ inputs.base_url }}
+          PLATFORM: ${{ inputs.platform }}
+          HANDLE: ${{ inputs.handle }}
+          PLATFORM_ACCOUNT_ID: ${{ inputs.platform_account_id }}
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+        run: |
+          curl -sS -X POST "$BASE_URL/accounts" \
+            -H "Authorization: Bearer $TOKEN" -H "content-type: application/json" \
+            --data "$(python3 -c 'import json,os; print(json.dumps({
+              "platform": os.environ["PLATFORM"],
+              "handle": os.environ["HANDLE"],
+              "platform_account_id": os.environ["PLATFORM_ACCOUNT_ID"],
+              "oauth_token": os.environ["IG_ACCESS_TOKEN"],
+            }))')" | python3 -m json.tool
+
+      - name: Verify the account is eligible for auto-publish
+        env:
+          BASE_URL: ${{ inputs.base_url }}
+        run: |
+          curl -sS "$BASE_URL/accounts" -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
