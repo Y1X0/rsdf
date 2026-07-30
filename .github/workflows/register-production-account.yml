@@ -66,6 +66,12 @@ jobs:
           echo "TOKEN=$TOKEN" >> "$GITHUB_ENV"
 
       - name: Register the account (safe to re-run - duplicates are rejected with 409, not created)
+        # Real bug found via a live run: `curl` alone doesn't fail on an
+        # HTTP error body (a 500 with {"detail": "..."} still exits 0), so
+        # this step previously reported "success" even though the account
+        # was never actually created. Now explicitly checks the response
+        # for a real "id" field (success) vs. any other shape (failure) and
+        # fails the job loudly with the real error body either way.
         env:
           BASE_URL: ${{ inputs.base_url }}
           PLATFORM: ${{ inputs.platform }}
@@ -73,16 +79,26 @@ jobs:
           PLATFORM_ACCOUNT_ID: ${{ inputs.platform_account_id }}
           IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
         run: |
-          curl -sS -X POST "$BASE_URL/accounts" \
+          RESPONSE=$(curl -sS -X POST "$BASE_URL/accounts" \
             -H "Authorization: Bearer $TOKEN" -H "content-type: application/json" \
             --data "$(python3 -c 'import json,os; print(json.dumps({
               "platform": os.environ["PLATFORM"],
               "handle": os.environ["HANDLE"],
               "platform_account_id": os.environ["PLATFORM_ACCOUNT_ID"],
               "oauth_token": os.environ["IG_ACCESS_TOKEN"],
-            }))')" | python3 -m json.tool
+            }))')")
+          echo "$RESPONSE" | python3 -m json.tool
+          echo "$RESPONSE" | python3 -c "
+          import sys, json
+          body = json.load(sys.stdin)
+          if not isinstance(body, dict) or 'id' not in body:
+              print('::error::Account registration did not return a real account id - see the response body above')
+              sys.exit(1)
+          print(f'Account id: {body[\"id\"]}, status: {body.get(\"status\")}, health_tier: {body.get(\"health_tier\")}')
+          "
 
       - name: Verify the account is eligible for auto-publish
+        if: always()
         env:
           BASE_URL: ${{ inputs.base_url }}
         run: |
