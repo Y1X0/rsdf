@@ -27,7 +27,7 @@ from content_factory.schemas.account import (
 )
 from content_factory.schemas.analytics import ProfitSummaryOut
 from content_factory.services import account_service, analytics_service, token_encryption
-from content_factory.services.token_encryption import TokenEncryptionNotConfigured
+from content_factory.services.token_encryption import TokenEncryptionError
 
 router = APIRouter(prefix="/accounts", tags=["accounts"])
 
@@ -53,7 +53,7 @@ def create_account(
     if payload.oauth_token:
         try:
             encrypted_token = token_encryption.encrypt_token(payload.oauth_token, settings)
-        except TokenEncryptionNotConfigured as exc:
+        except TokenEncryptionError as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from None
 
     try:
@@ -121,7 +121,7 @@ def update_account(
     if payload.oauth_token is not None:
         try:
             account.encrypted_oauth_token = token_encryption.encrypt_token(payload.oauth_token, settings)
-        except TokenEncryptionNotConfigured as exc:
+        except TokenEncryptionError as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from None
 
     if payload.warmup_status is not None:

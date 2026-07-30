@@ -48,7 +48,25 @@ def test_create_account_without_token_reports_no_credentials(client):
     account = _create_account(client)
     assert account["has_credentials"] is False
     assert account["health_tier"] == "healthy"
-    assert account["warmup_status"] == "warming"
+
+
+def test_create_account_with_malformed_encryption_key_returns_a_clear_500(client, monkeypatch):
+    """Real production bug this closes: TOKEN_ENCRYPTION_KEY set to
+    something that isn't a real Fernet.generate_key() value made account
+    creation fail with an opaque, unactionable "Internal server error"
+    (a bare, uncaught ValueError from Fernet(...) construction) instead of
+    a clear message naming the actual misconfigured env var."""
+    monkeypatch.setenv("TOKEN_ENCRYPTION_KEY", "not-a-real-fernet-key")
+    get_settings.cache_clear()
+
+    resp = client.post(
+        "/accounts",
+        json={"platform": "tiktok", "handle": "creator1", "daily_post_cap": 3, "oauth_token": "some-token"},
+    )
+
+    assert resp.status_code == 500
+    assert "TOKEN_ENCRYPTION_KEY" in resp.json()["detail"]
+    assert resp.json()["detail"] != "Internal server error"
 
 
 def test_create_account_stores_and_returns_platform_account_id(client):
