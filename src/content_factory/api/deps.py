@@ -16,6 +16,8 @@ from sqlalchemy.orm import Session
 from content_factory.auth.rate_limiter import RateLimiter
 from content_factory.auth.rate_limiter_factory import get_auth_rate_limiter as _build_auth_rate_limiter
 from content_factory.config import get_settings
+from content_factory.content_sources.base import ContentSourceProvider
+from content_factory.content_sources.factory import get_content_source_provider as _build_content_source_provider
 from content_factory.db.base import SessionLocal
 from content_factory.diarization.base import SpeakerDiarizationProvider
 from content_factory.diarization.factory import get_diarization_provider as _build_diarization_provider
@@ -129,3 +131,12 @@ def _diarization_provider_singleton() -> SpeakerDiarizationProvider:
 
 def get_diarization_provider() -> SpeakerDiarizationProvider:
     return _diarization_provider_singleton()
+
+
+@lru_cache
+def _content_source_provider_singleton() -> ContentSourceProvider:
+    return _build_content_source_provider(get_settings())
+
+
+def get_content_source_provider() -> ContentSourceProvider:
+    return _content_source_provider_singleton()

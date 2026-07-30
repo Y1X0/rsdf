@@ -151,3 +151,13 @@ class ClipStatus(str, enum.Enum):
     SUGGESTED = "suggested"
     RENDERED = "rendered"
     REJECTED = "rejected"
+
+
+class SourceVideoOrigin(str, enum.Enum):
+    """Where a SourceVideo's file actually came from — purely informational
+    plus a dedup key (paired with external_source_id) for
+    content_sources/*: everything downstream (transcribe/analyze/render)
+    reads only storage_path and doesn't care which origin produced it."""
+
+    UPLOAD = "upload"
+    CONTENT_REWARDS = "content_rewards"

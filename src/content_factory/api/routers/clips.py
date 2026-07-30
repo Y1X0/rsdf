@@ -7,13 +7,16 @@ research/render routes.
 """
 
 import re
+import time
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
+from content_factory.agents.base import agent_run
 from content_factory.api.deps import (
     get_clip_renderer,
+    get_content_source_provider,
     get_db,
     get_diarization_provider,
     get_llm_client,
@@ -25,15 +28,23 @@ from content_factory.api.pagination import Pagination, pagination_params
 from content_factory.api.serializers import to_video_out
 from content_factory.auth.dependencies import require_auth, require_operator
 from content_factory.config import get_settings
+from content_factory.content_sources.base import ContentSourceProvider
 from content_factory.db.models.campaign import Campaign
 from content_factory.db.models.clip import Clip
+from content_factory.db.models.enums import SourceVideoOrigin
 from content_factory.db.models.source_video import SourceVideo
 from content_factory.db.models.video import Video
 from content_factory.diarization.base import SpeakerDiarizationProvider
 from content_factory.llm.base import LLMClient
 from content_factory.logging_config import get_logger
 from content_factory.schemas.clip import ClipOut, ClipRenderRequestBody
-from content_factory.schemas.source_video import AnalyzeRequest, SourceVideoOut, TranscribeRequest
+from content_factory.schemas.source_video import (
+    AnalyzeRequest,
+    ContentRewardsSyncResponse,
+    ContentRewardsSyncResultItem,
+    SourceVideoOut,
+    TranscribeRequest,
+)
 from content_factory.schemas.video import VideoOut
 from content_factory.services import clip_service, content_intelligence, idempotency
 from content_factory.services.budget_governor import enforce_budget
@@ -103,6 +114,91 @@ def upload_source_video(
     db.flush()
 
     return SourceVideoOut.model_validate(source_video)
+
+
+@router.post("/source-videos/sync-content-rewards", response_model=ContentRewardsSyncResponse)
+def sync_content_rewards(
+    campaign_id: int | None = None,
+    db: Session = Depends(get_db),
+    content_source_provider: ContentSourceProvider = Depends(get_content_source_provider),
+    notification_provider=Depends(get_notification_provider),
+    _principal: dict = Depends(require_operator),
+) -> ContentRewardsSyncResponse:
+    """Fetches every video currently available from the configured content
+    source (see content_sources/ — a manual/no-op default until
+    CONTENT_SOURCE_PROVIDER=content_rewards is set) and registers each one
+    exactly the way `POST /source-videos` (the existing manual upload
+    route) already does — a fetched video enters the *unmodified*
+    transcribe/analyze/render/review/publish pipeline identically to an
+    uploaded one. Idempotent per remote video (`external_id`): re-running
+    this after new campaigns appear never re-downloads or re-registers a
+    video already fetched by an earlier sync."""
+    settings = get_settings()
+    enforce_budget(
+        db, niche_id=_niche_id_for_campaign(db, campaign_id), notification_provider=notification_provider
+    )
+
+    storage_dir = settings.media_storage_path() / "source_videos"
+    storage_dir.mkdir(parents=True, exist_ok=True)
+
+    def _load_existing(source_video_id: int) -> SourceVideo:
+        return db.get(SourceVideo, source_video_id)
+
+    results: list[ContentRewardsSyncResultItem] = []
+    for remote_video in content_source_provider.list_available_videos():
+
+        def _work(remote_video=remote_video) -> SourceVideo:
+            source_video = clip_service.register_source_video(
+                db, campaign_id=campaign_id, title=remote_video.title, storage_path=""
+            )
+            source_video.source = SourceVideoOrigin.CONTENT_REWARDS
+            source_video.external_source_id = remote_video.external_id
+            db.flush()
+
+            safe_name = _UNSAFE_FILENAME_CHARS.sub("_", f"{remote_video.external_id}.mp4")
+            dest_path = storage_dir / f"{source_video.id}_{safe_name}"
+
+            with agent_run(
+                db,
+                agent_name="content_rewards_connector",
+                scope="source_video.fetch_external",
+                entity_type="source_video",
+                entity_id=source_video.id,
+                cost_campaign_id=campaign_id,
+            ) as handle:
+                started = time.monotonic()
+                content_source_provider.download_video(remote_video, str(dest_path))
+                handle.record_output(
+                    provider="content_rewards",
+                    model=None,
+                    model_version=None,
+                    prompt=remote_video.source_page_url,
+                    output_summary={"external_id": remote_video.external_id, "title": remote_video.title},
+                    cost_usd=0.0,
+                    duration_ms=int((time.monotonic() - started) * 1000),
+                )
+
+            source_video.storage_path = str(dest_path)
+            db.flush()
+            logger.info("content_rewards_video_fetched", source_video_id=source_video.id)
+            return source_video
+
+        source_video, created = idempotency.run_idempotent(
+            db,
+            scope="source_video.fetch_external",
+            idempotency_key=remote_video.external_id,
+            payload={"external_id": remote_video.external_id, "source": "content_rewards"},
+            entity_type="source_video",
+            work_fn=_work,
+            load_existing=_load_existing,
+        )
+        results.append(
+            ContentRewardsSyncResultItem(
+                external_id=remote_video.external_id, source_video_id=source_video.id, created=created
+            )
+        )
+
+    return ContentRewardsSyncResponse(results=results)
 
 
 @router.get("/source-videos", response_model=list[SourceVideoOut])

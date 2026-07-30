@@ -2,7 +2,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from content_factory.db.models.enums import ProcessingStatus
+from content_factory.db.models.enums import ProcessingStatus, SourceVideoOrigin
 
 
 class SourceVideoCreate(BaseModel):
@@ -17,10 +17,22 @@ class SourceVideoOut(BaseModel):
     campaign_id: int | None
     title: str
     duration_s: float | None
+    source: SourceVideoOrigin
+    external_source_id: str | None
     transcription_status: ProcessingStatus
     transcript_text: str | None
     analysis_status: ProcessingStatus
     created_at: datetime
+
+
+class ContentRewardsSyncResultItem(BaseModel):
+    external_id: str
+    source_video_id: int
+    created: bool  # False when an earlier sync already fetched this exact video
+
+
+class ContentRewardsSyncResponse(BaseModel):
+    results: list[ContentRewardsSyncResultItem]
 
 
 class TranscribeRequest(BaseModel):
