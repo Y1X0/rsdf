@@ -172,6 +172,20 @@ def create_app() -> FastAPI:
                 current_settings.media_backup_enabled and current_settings.media_backup_public_base_url
             ),
             "publishing_enabled": current_settings.publishing_enabled,
+            # Booleans only - never the actual secret values. This is the
+            # platform-level gate publishing/factory.py checks before ever
+            # trying a real provider (an account's own access token is a
+            # separate, per-account check on top of this) - exposing just
+            # whether it's configured lets an operator confirm a live
+            # deployment's real-publish readiness with a single
+            # unauthenticated request, instead of only being able to infer
+            # it after the fact from an auto-publish outcome saying
+            # "scheduled" via ManualPublishingProvider.
+            "publishing_platform_credentials_configured": {
+                "tiktok": bool(current_settings.tiktok_client_key),
+                "youtube": bool(current_settings.youtube_client_id),
+                "instagram": bool(current_settings.instagram_app_id),
+            },
         }
 
         if any(status == "unreachable" for status in checks.values()):

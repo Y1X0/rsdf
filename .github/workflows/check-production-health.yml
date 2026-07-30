@@ -1,0 +1,29 @@
+name: Check production health
+
+# Cheap, read-only diagnostic: a single unauthenticated GET /health against
+# the live deployment - no video upload, no transcription/LLM cost, no
+# database writes. Manual trigger only, same reasoning as every other
+# workflow here that touches the live deployment (docs/PILOT_ENVIRONMENT_STATUS.md):
+# this project's Claude Code sessions can't reach onrender.com themselves, so
+# this is how a config question (e.g. "is INSTAGRAM_APP_ID actually set?")
+# gets answered without re-running the full, real-cost pipeline verification
+# just to read one field of /health's response.
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: "Live deployment base URL"
+        required: true
+        default: "https://content-factory-bhhd.onrender.com"
+
+jobs:
+  check:
+    name: GET /health
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch and print /health
+        env:
+          BASE_URL: ${{ inputs.base_url }}
+        run: |
+          curl -sS "$BASE_URL/health" | python3 -m json.tool
