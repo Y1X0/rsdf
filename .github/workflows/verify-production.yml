@@ -1,0 +1,71 @@
+name: Verify production pipeline
+
+# Runs the real, end-to-end production verification
+# (scripts/verify_production_pipeline.sh) against the live Render
+# deployment, from a GitHub-hosted runner with normal outbound internet
+# access - unlike this project's Claude Code sessions, whose sandbox
+# network policy blocks onrender.com entirely (see
+# docs/PILOT_ENVIRONMENT_STATUS.md). Manual trigger only: this hits a
+# real production service (real transcription cost, a real uploaded test
+# video, a real review-approval, a real publish attempt), so it must
+# never fire automatically on push/PR.
+#
+# One-time setup required before the first run: add a repository secret
+# named AUTH_CLIENT_SECRET (Settings -> Secrets and variables -> Actions
+# -> New repository secret) with the real value from Render's dashboard
+# (Environment tab). GitHub automatically redacts registered secrets
+# wherever they'd appear in this job's logs.
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: "Live deployment base URL"
+        required: true
+        default: "https://content-factory-bhhd.onrender.com"
+      auth_client_id:
+        description: "Auth client id"
+        required: true
+        default: "pilot-operator"
+
+jobs:
+  verify:
+    name: Run live production verification
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Generate a real synthetic long-form test video
+        # Same recipe already validated locally: a real 70s 1920x1080 file
+        # with a genuine hard scene cut at 40s and real audio (tone bursts
+        # separated by real silence) - not a trivial/degenerate fixture.
+        run: |
+          ffmpeg -y \
+            -f lavfi -i "color=c=red:s=1920x1080:r=25:d=40" \
+            -f lavfi -i "color=c=blue:s=1920x1080:r=25:d=30" \
+            -f lavfi -i "anullsrc=r=44100:cl=mono:d=3" \
+            -f lavfi -i "sine=frequency=220:sample_rate=44100:d=5" \
+            -f lavfi -i "anullsrc=r=44100:cl=mono:d=2" \
+            -f lavfi -i "sine=frequency=330:sample_rate=44100:d=6" \
+            -f lavfi -i "anullsrc=r=44100:cl=mono:d=2" \
+            -f lavfi -i "sine=frequency=440:sample_rate=44100:d=7" \
+            -f lavfi -i "anullsrc=r=44100:cl=mono:d=15" \
+            -f lavfi -i "sine=frequency=550:sample_rate=44100:d=8" \
+            -f lavfi -i "anullsrc=r=44100:cl=mono:d=2" \
+            -f lavfi -i "sine=frequency=660:sample_rate=44100:d=8" \
+            -f lavfi -i "anullsrc=r=44100:cl=mono:d=12" \
+            -filter_complex "[0:v][1:v]concat=n=2:v=1:a=0[vout];[2:a][3:a][4:a][5:a][6:a][7:a][8:a][9:a][10:a][11:a][12:a]concat=n=11:v=0:a=1[aout]" \
+            -map "[vout]" -map "[aout]" \
+            -c:v libx264 -preset ultrafast -c:a aac \
+            /tmp/source_long.mp4
+
+      - name: Run the full verification
+        env:
+          BASE_URL: ${{ inputs.base_url }}
+          AUTH_CLIENT_ID: ${{ inputs.auth_client_id }}
+          AUTH_CLIENT_SECRET: ${{ secrets.AUTH_CLIENT_SECRET }}
+          SOURCE_VIDEO_PATH: /tmp/source_long.mp4
+        run: bash scripts/verify_production_pipeline.sh

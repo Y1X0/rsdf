@@ -1,0 +1,115 @@
+name: CI
+
+# Production Hardening Sprint H2 — closes PHASE1_AUDIT_v2.md's "no CI
+# pipeline yet" gap and the production readiness review's CQ4/I2 findings.
+# Every change (push or PR, any branch) gets: dependency install from the
+# pinned lockfile, a real migration round-trip against a real Postgres
+# service container, the full test suite, two security checks, and a
+# from-scratch container build — the same sequence a human previously had
+# to remember to run locally before merging/deploying.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: Test, migrate, and scan
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: content_factory
+          POSTGRES_PASSWORD: content_factory
+          POSTGRES_DB: content_factory
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U content_factory"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+      # Production Hardening Sprint H8: without this, tests/unit/
+      # test_redis_rate_limiter.py's real-Redis distributed-safety
+      # regression test silently skips in CI (it's designed to skip
+      # cleanly when Redis is unavailable, so its absence here was never
+      # loud) and /health's Redis check has nothing to actually verify
+      # against — matching docker-compose.yml's own redis:7-alpine choice.
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+
+    env:
+      DATABASE_URL: postgresql+psycopg2://content_factory:content_factory@localhost:5432/content_factory
+      # Test-only, never reused for anything real, only ever alive for this
+      # CI job. Deliberately does NOT set AUTH_CLIENT_ID/AUTH_CLIENT_SECRET
+      # here (Production Hardening Sprint H8 — a real bug this exact
+      # oversight caused): tests/conftest.py's `client` fixture posts a
+      # hardcoded "test-operator"/"test-operator-secret" pair to
+      # /auth/token, and only falls back to those values via
+      # `os.environ.setdefault(...)` when the env var isn't *already* set.
+      # Setting a *different* pair here pre-empts that default and makes
+      # every authenticated test fail with 401 "Invalid client
+      # credentials" — which is exactly what happened on every run of this
+      # workflow until this fix. JWT_SECRET_KEY has no such hardcoded
+      # counterpart anywhere in the test suite, so overriding it here is
+      # safe.
+      JWT_SECRET_KEY: ci-test-jwt-secret-do-not-use-in-production
+      JWT_EXPIRES_MINUTES: "60"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies (from lockfile)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-lock.txt
+          pip install --no-deps -e .
+
+      - name: Apply migrations
+        run: alembic upgrade head
+
+      - name: Check for migration drift
+        run: alembic check
+
+      - name: Verify migration reversibility (full round-trip)
+        run: |
+          alembic downgrade base
+          alembic upgrade head
+          alembic check
+
+      - name: Run test suite
+        run: pytest -q
+
+      - name: Dependency vulnerability scan (pip-audit)
+        run: pip-audit -r requirements-lock.txt
+
+      - name: Static security scan (bandit)
+        # -ll: fail on Medium/High severity only. The two Low-severity
+        # findings in template_pillow.py (subprocess usage) were reviewed
+        # in docs/PRODUCTION_READINESS_REVIEW.md and confirmed safe — a
+        # fixed-arg-list `subprocess.run` with no shell and no
+        # user-controlled path components, not a real injection surface.
+        run: bandit -r src/content_factory -ll
+
+  docker-build:
+    name: Build container image
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t content-factory:${{ github.sha }} .

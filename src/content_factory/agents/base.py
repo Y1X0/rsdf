@@ -1,0 +1,147 @@
+"""AgentRunRecorder: the only code path allowed to write an AgentRun row.
+
+Every agent wraps its external-provider call in `agent_run(...)`. This
+guarantees, mechanically rather than by convention:
+
+- Adjustment #3 (every AI output versioned): the recorded row always has
+  prompt, provider, model, model_version, cost_usd, duration_ms, and
+  started_at/completed_at, because `AgentRunHandle.record_output` requires
+  them all as keyword arguments — there's no way to write a partial record.
+- Adjustment #4 (structured logs, no silent failures): a log event fires on
+  start, completion, and failure. On failure, the AgentRun row itself is
+  marked FAILED with the error message *before* the exception is re-raised
+  — nothing here ever swallows an exception.
+
+**v1.1 durability fix (PHASE1_AUDIT.md F1):** the AgentRun row (and, on
+success, its derived CostLedger entry) is committed *immediately* on
+completion or failure — not left flushed-and-pending for the outer
+request's single end-of-request commit. Previously, a request that ran two
+agent_run() calls (e.g. TTS then render) and failed on the second one
+rolled back the *first* call's already-real, already-billed cost record
+too, because nothing had committed it yet. Committing here means a later
+failure in the same request can no longer erase a step that already
+genuinely happened. This does trade the old "one atomic transaction per
+request" guarantee for "durable as of each completed step" — deliberately:
+the old guarantee protected against half-created *data*, but a completed
+AgentRun represents a half-created *fact* (money already spent, or an audit
+record that legally must survive), and those are not the same thing.
+"""
+
+import json
+import re
+from collections.abc import Iterator
+from contextlib import contextmanager
+from datetime import UTC, datetime
+
+from sqlalchemy.orm import Session
+
+from content_factory.db.models.agent_run import AgentRun
+from content_factory.db.models.enums import ProcessingStatus
+from content_factory.logging_config import get_logger
+
+logger = get_logger(__name__)
+
+
+class AgentRunHandle:
+    def __init__(self, run: AgentRun) -> None:
+        self.run = run
+
+    def record_output(
+        self,
+        *,
+        provider: str,
+        model: str | None,
+        model_version: str | None,
+        prompt: str,
+        output_summary: dict,
+        cost_usd: float,
+        duration_ms: int,
+    ) -> None:
+        self.run.provider = provider
+        self.run.model = model
+        self.run.model_version = model_version
+        self.run.prompt = prompt
+        self.run.output_summary = output_summary
+        self.run.cost_usd = cost_usd
+        self.run.duration_ms = duration_ms
+
+
+@contextmanager
+def agent_run(
+    db: Session,
+    *,
+    agent_name: str,
+    scope: str,
+    entity_type: str | None = None,
+    entity_id: int | None = None,
+    input_summary: dict | None = None,
+    cost_video_id: int | None = None,
+    cost_campaign_id: int | None = None,
+) -> Iterator[AgentRunHandle]:
+    """`cost_video_id`/`cost_campaign_id` are optional linkage for the
+    CostLedger entry this call derives on success (see analytics_service
+    .record_agent_run_cost) — passing them here, rather than leaving every
+    caller to remember a separate follow-up call, is what guarantees *every*
+    agent run's cost is ledgered, not just the ones a caller happened to
+    wire up (this was previously missing entirely for the Research and
+    Script agents — see PHASE1_AUDIT.md's cost-tracking gap)."""
+    run = AgentRun(
+        agent_name=agent_name,
+        scope=scope,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        provider="unknown",
+        input_summary=input_summary,
+        status=ProcessingStatus.IN_PROGRESS,
+        started_at=datetime.now(UTC),
+    )
+    db.add(run)
+    db.flush()
+
+    log = logger.bind(agent_name=agent_name, scope=scope, agent_run_id=run.id,
+                       entity_type=entity_type, entity_id=entity_id)
+    log.info("agent_run_started")
+
+    handle = AgentRunHandle(run)
+    try:
+        yield handle
+    except Exception as exc:
+        run.status = ProcessingStatus.FAILED
+        run.error_message = str(exc)
+        run.completed_at = datetime.now(UTC)
+        db.commit()
+        log.error("agent_run_failed", error=str(exc))
+        raise
+    else:
+        run.status = ProcessingStatus.COMPLETED
+        run.completed_at = datetime.now(UTC)
+
+        # Local import: avoids a module-load-time cycle (services import
+        # from db.models, not from agents), and keeps agents/base.py's
+        # import surface minimal for anything that doesn't hit this path.
+        from content_factory.services import analytics_service
+
+        analytics_service.record_agent_run_cost(
+            db, agent_run=run, video_id=cost_video_id, campaign_id=cost_campaign_id
+        )
+        db.commit()
+        log.info("agent_run_completed", cost_usd=float(run.cost_usd or 0), duration_ms=run.duration_ms)
+
+
+_CODE_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
+
+
+def parse_json_response(text: str, *, default: dict | list):
+    """Best-effort JSON extraction from an LLM response. Claude sometimes
+    wraps JSON in a markdown code fence even when explicitly asked not to —
+    this strips that before falling back to `default` on genuine parse
+    failure. Callers must log a warning when the fallback is used (this
+    function never fails silently, but it also never raises for malformed
+    LLM output — that's a normal, expected outcome to handle, not a bug)."""
+    stripped = text.strip()
+    match = _CODE_FENCE_RE.search(stripped)
+    candidate = match.group(1) if match else stripped
+    try:
+        return json.loads(candidate)
+    except json.JSONDecodeError:
+        return default

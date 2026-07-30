@@ -1,0 +1,123 @@
+[project]
+name = "content-factory"
+version = "2.0.0"
+description = "AI Content Factory — Phase 1 MVP (Whop Content Rewards content pipeline)"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "sqlalchemy>=2.0",
+    "alembic>=1.13",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "psycopg2-binary>=2.9",
+    "structlog>=24.1",
+    "anthropic>=0.34",
+    "pyjwt>=2.8",
+    "cryptography>=42.0",
+    "python-multipart>=0.0.9",
+]
+
+[project.optional-dependencies]
+# Optional rendering backend. Core business logic never imports these
+# directly (see video_production/renderer/providers/template_pillow.py) —
+# without this extra installed, the system falls back to the NullRenderer.
+rendering = [
+    "Pillow>=10.3",
+    "imageio-ffmpeg>=0.5",
+]
+elevenlabs = [
+    "httpx>=0.27",
+]
+# Optional Groq LLM provider (free-tier alternative to Anthropic — see
+# llm/providers/groq_provider.py). LLM_PROVIDER=groq with no GROQ_API_KEY
+# set already falls back to FakeLLMClient (config.py's
+# resolved_llm_provider). If a key is set but this extra isn't installed,
+# httpx's lazy import raises a clear RuntimeError on first real call
+# (same pattern as elevenlabs_provider.py), not at import/construction
+# time.
+groq = [
+    "httpx>=0.27",
+]
+# Optional Slack notification backend (Phase 2 M1). Without this extra
+# installed, NOTIFICATION_PROVIDER=slack falls back to LogNotificationProvider
+# (see notifications/factory.py) — never a hard import-time failure.
+notifications = [
+    "httpx>=0.27",
+]
+# Optional real platform publishing backends (Phase 2 M4). Without this
+# extra installed, every platform falls back to ManualPublishingProvider
+# (see publishing/factory.py) — never a hard import-time failure.
+publishing = [
+    "httpx>=0.27",
+]
+# Production Hardening Sprint (H4): shared-storage rate limiting, needed the
+# moment more than one worker process is run. Without this extra installed,
+# RATE_LIMIT_BACKEND=redis falls back to the in-process limiter with a
+# logged warning (see auth/rate_limiter_factory.py) — never a hard
+# import-time failure, matching every other provider in this codebase.
+redis = [
+    "redis>=5.0",
+]
+# Optional real speaker diarization backend (pyannote.audio, PyTorch-based).
+# Deliberately NOT part of the `production` bundle below and NOT installed
+# by the Dockerfile by default - see diarization/providers/pyannote_provider.py's
+# docstring for why this is a real, meaningfully heavier resource cost than
+# every other optional integration in this file. Without this extra
+# installed, DIARIZATION_PROVIDER=pyannote falls back to NullDiarizationProvider
+# (see diarization/factory.py) - never a hard import-time failure.
+diarization = [
+    "pyannote.audio>=3.1",
+]
+# Production Hardening Sprint (H3): optional S3 backup copy of rendered
+# media. Without this extra installed, MEDIA_BACKUP_ENABLED=true falls back
+# to NullMediaBackupProvider with a logged warning (see services/media_backup.py).
+storage = [
+    "boto3>=1.34",
+]
+# Production Hardening Sprint (H6): metrics + error tracking. Both are
+# genuinely optional — the app runs identically without them, just without
+# the /metrics endpoint and without Sentry reporting.
+observability = [
+    "prometheus-fastapi-instrumentator>=6.1",
+    "sentry-sdk[fastapi]>=2.0",
+]
+# Convenience bundle for a full-featured production deployment — the
+# Dockerfile installs this by default. Every one of these degrades to a
+# safe, zero-dependency default if left uninstalled; this extra exists so a
+# real deployment doesn't have to enumerate each optional integration by hand.
+production = [
+    "httpx>=0.27",
+    "redis>=5.0",
+    "boto3>=1.34",
+    "prometheus-fastapi-instrumentator>=6.1",
+    "sentry-sdk[fastapi]>=2.0",
+]
+dev = [
+    "pytest>=8.2",
+    "pytest-asyncio>=0.23",
+    "httpx>=0.27",
+    "pip-audit>=2.7",
+    "bandit>=1.7",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# Without this, a regular (non-editable) `pip install .` — what the
+# Dockerfile's builder stage actually runs — silently drops non-.py files
+# like static/dashboard.html from the built package: setuptools only
+# includes source files under discovered packages by default. Local dev
+# never notices because `pip install -e .` imports straight from src/ on
+# disk, where the file is always physically present regardless of this
+# setting.
+[tool.setuptools.package-data]
+content_factory = ["static/*.html"]
