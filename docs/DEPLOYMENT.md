@@ -230,6 +230,37 @@ it end to end and noticing the output.
 request, no video upload needed — or run
 `scripts/verify_production_pipeline.sh` end to end.
 
+## 8c. Making rendered clips publicly reachable (no cloud storage account required)
+
+A platform (Instagram/TikTok/YouTube) can never fetch a rendered clip that
+only exists as a local filesystem path — `Video.asset_url` starts out as
+exactly that (`var/media/clips/clip_N.mp4`), so `publishing_service.py`
+refuses to auto-publish until it's been replaced with a real `https://` URL
+(`services/media_backup.py`). There are two ways to get one:
+
+- **S3-compatible object storage** (AWS S3, Cloudflare R2, etc.) — set
+  `MEDIA_BACKUP_S3_BUCKET` (+ `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/
+  `AWS_REGION` or `MEDIA_BACKUP_S3_ENDPOINT_URL` for a non-AWS provider) and
+  `MEDIA_BACKUP_PUBLIC_BASE_URL` pointing at the bucket's real public URL.
+  Requires creating and paying for (or provisioning a free tier of) an
+  external cloud storage account.
+- **This app's own `/public-media` route** (`api/main.py` mounts it,
+  unauthenticated, serving `MEDIA_STORAGE_DIR` directly) — the zero-cost
+  default when you don't want a separate cloud account: leave
+  `MEDIA_BACKUP_S3_BUCKET` unset and set `MEDIA_BACKUP_PUBLIC_BASE_URL` to
+  this same deployment's own base URL + `/public-media` (e.g.
+  `https://content-factory-bhhd.onrender.com/public-media`). See
+  `services/media_backup.py::LocalDiskMediaBackupProvider`'s own docstring
+  for the trade-off: this local disk is only as durable as the single
+  running instance (not guaranteed to survive a restart/redeploy the way a
+  real bucket would), which is fine when publish follows render shortly
+  after, as the auto-publish cascade does, but is not a substitute for S3
+  as a genuine backup/DR story.
+
+Either way, set `MEDIA_BACKUP_ENABLED=true` and confirm
+`GET /health`'s `pipeline.media_backup_publicly_hostable` is `true` before
+expecting auto-publish to ever reach a real provider.
+
 ## 9. Observability endpoints
 
 - `GET /health` — liveness + per-dependency connectivity checks (database

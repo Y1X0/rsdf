@@ -133,17 +133,25 @@ class Settings(BaseSettings):
     # environment variables (AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/
     # AWS_REGION), not custom settings here.
     media_backup_enabled: bool = False
+    # Leave empty to skip S3 entirely and use the zero-cost option instead:
+    # this app's own public `/public-media` route (api/main.py) serving
+    # media_storage_dir directly — set media_backup_public_base_url to this
+    # service's own https:// base URL + "/public-media" and no cloud
+    # storage account is needed at all (see
+    # services/media_backup.py::LocalDiskMediaBackupProvider). Only set
+    # this when you actually want S3/R2 instead.
     media_backup_s3_bucket: str = ""
     media_backup_s3_prefix: str = "content-factory/media"
     # Only needed for an S3-compatible service other than real AWS S3 (e.g.
     # Cloudflare R2's account-specific endpoint). Leave empty for real AWS.
     media_backup_s3_endpoint_url: str = ""
-    # The real, already-verified-reachable base URL your bucket serves
-    # public objects from (R2's "r2.dev" public-access URL, a CDN/custom
-    # domain in front of the bucket, etc.) — WITHOUT a trailing slash and
-    # WITHOUT the key. Required for publishing_service.py to ever consider
-    # an uploaded asset publishable; empty means uploads still happen
-    # (durability backup) but nothing can ever be auto-published.
+    # The real, already-verified-reachable base URL assets are servable
+    # from — either your S3/R2 bucket's public URL (with media_backup_s3_bucket
+    # set), or this same app's own base URL + "/public-media" (with
+    # media_backup_s3_bucket left empty) — WITHOUT a trailing slash. Required
+    # for publishing_service.py to ever consider an uploaded asset
+    # publishable; empty means uploads still happen (durability backup) but
+    # nothing can ever be auto-published.
     media_backup_public_base_url: str = ""
 
     # --- Distributed rate limiting (Production Hardening Sprint H4, S2/SC1) ---

@@ -112,6 +112,41 @@ class S3MediaBackupProvider(MediaBackupProvider):
         return MediaBackupResult(backed_up=True, location=location, public_url=public_url)
 
 
+class LocalDiskMediaBackupProvider(MediaBackupProvider):
+    """Zero-cost alternative to S3 for a single-instance deployment: this
+    app's own web server already has a real, public https:// URL (Render
+    assigns one to every service) - api/main.py mounts `/public-media` as
+    a static route serving `media_storage_dir` directly, with no auth,
+    specifically so an external platform can fetch a rendered asset
+    without this app needing an S3/R2 account or any paid storage at all.
+    "Backing up" here is therefore just computing the URL that same route
+    will serve the already-on-disk file at - there is no upload step, so
+    this can never fail the way S3MediaBackupProvider's upload can. The
+    real trade-off versus S3: this local disk is not guaranteed to survive
+    a redeploy or restart, so it's only as durable as the single running
+    instance - acceptable when publish happens shortly after render, as
+    the auto-publish cascade does."""
+
+    def __init__(self, *, storage_dir: str, public_base_url: str) -> None:
+        self._storage_dir = Path(storage_dir).resolve()
+        self._public_base_url = public_base_url.rstrip("/")
+
+    def backup(self, local_path: str) -> MediaBackupResult:
+        path = Path(local_path).resolve()
+        if not path.is_file():
+            logger.warning("media_backup_skipped", reason="local_file_missing", local_path=local_path)
+            return MediaBackupResult(backed_up=False, location=None, public_url=None)
+        try:
+            relative = path.relative_to(self._storage_dir)
+        except ValueError:
+            logger.warning("media_backup_skipped", reason="outside_storage_dir", local_path=local_path)
+            return MediaBackupResult(backed_up=False, location=None, public_url=None)
+
+        public_url = f"{self._public_base_url}/{relative.as_posix()}"
+        logger.info("media_backup_completed", local_path=local_path, location=str(path), public_url=public_url)
+        return MediaBackupResult(backed_up=True, location=str(path), public_url=public_url)
+
+
 def backup_and_get_public_url(provider: MediaBackupProvider, local_path: str | None, *, log) -> str | None:
     """Shared by production_service.py and clip_service.py: best-effort,
     never fatal — a failed or skipped backup must never fail an otherwise-
@@ -136,12 +171,21 @@ def backup_and_get_public_url(provider: MediaBackupProvider, local_path: str | N
 def get_media_backup_provider(settings: Settings) -> MediaBackupProvider:
     if not settings.media_backup_enabled:
         return NullMediaBackupProvider()
-    if not settings.media_backup_s3_bucket:
-        logger.warning("media_backup_provider_fallback", reason="no_bucket_configured")
-        return NullMediaBackupProvider()
-    return S3MediaBackupProvider(
-        bucket=settings.media_backup_s3_bucket,
-        prefix=settings.media_backup_s3_prefix,
-        endpoint_url=settings.media_backup_s3_endpoint_url,
-        public_base_url=settings.media_backup_public_base_url,
-    )
+    if settings.media_backup_s3_bucket:
+        return S3MediaBackupProvider(
+            bucket=settings.media_backup_s3_bucket,
+            prefix=settings.media_backup_s3_prefix,
+            endpoint_url=settings.media_backup_s3_endpoint_url,
+            public_base_url=settings.media_backup_public_base_url,
+        )
+    # No S3 bucket configured: fall back to the app's own public
+    # `/public-media` static route (see api/main.py) rather than forcing
+    # every operator to set up and pay for a cloud storage account just to
+    # get a public URL - see LocalDiskMediaBackupProvider's own docstring.
+    if settings.media_backup_public_base_url:
+        return LocalDiskMediaBackupProvider(
+            storage_dir=settings.media_storage_dir,
+            public_base_url=settings.media_backup_public_base_url,
+        )
+    logger.warning("media_backup_provider_fallback", reason="no_bucket_or_public_base_url_configured")
+    return NullMediaBackupProvider()

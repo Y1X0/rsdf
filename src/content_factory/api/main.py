@@ -4,6 +4,7 @@ from pathlib import Path
 import structlog
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 
 from content_factory.api.routers import (
@@ -81,6 +82,18 @@ def create_app() -> FastAPI:
     app.include_router(publications.router)
     app.include_router(experimentation.router)
     app.include_router(clips.router)
+
+    # Deliberately unauthenticated: this is what lets an external platform
+    # (Instagram/TikTok/YouTube) actually fetch a rendered clip to publish
+    # it - see services/media_backup.py's LocalDiskMediaBackupProvider,
+    # the zero-cost alternative to an S3/R2 account. Content served here
+    # only ever came from an already-rendered clip about to be posted
+    # publicly anyway, so this isn't a new exposure of anything private.
+    app.mount(
+        "/public-media",
+        StaticFiles(directory=str(settings.media_storage_path())),
+        name="public-media",
+    )
 
     @app.exception_handler(IdempotencyConflict)
     def _handle_idempotency_conflict(request: Request, exc: IdempotencyConflict) -> JSONResponse:
