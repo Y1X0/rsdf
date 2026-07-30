@@ -1,14 +1,16 @@
-"""Real Instagram Graph API analytics provider (media insights). `httpx`
+"""Real Instagram Graph API analytics provider (media insights), targeting
+**Instagram API with Instagram Login** — same host as
+publishing/providers/instagram_provider.py, and for the same reason: an
+`IGAA...`-prefixed access token (issued by Instagram Login) is only valid
+against `graph.instagram.com`, not the classic Facebook Login for
+Business host (`graph.facebook.com`) this previously pointed at. `httpx`
 is only imported here, lazily (install with `pip install '.[publishing]'`).
-Never exercised against the live API in this environment (ARCHITECTURE.md
-§13's Meta App Review caveat) — unit-tested against mocked HTTP responses
-only.
 """
 
 from content_factory.analytics_ingestion.base import AnalyticsFetchResult, PlatformAnalyticsProvider
 from content_factory.retry import RetryableProviderError
 
-_INSIGHTS_URL_TEMPLATE = "https://graph.facebook.com/v19.0/{media_id}/insights"
+_INSIGHTS_URL_TEMPLATE = "https://graph.instagram.com/v21.0/{media_id}/insights"
 
 
 class InstagramAnalyticsProvider(PlatformAnalyticsProvider):
