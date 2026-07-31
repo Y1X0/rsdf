@@ -294,3 +294,93 @@ def test_sync_content_rewards_is_idempotent_on_rerun(client):
 def test_sync_content_rewards_requires_authentication(unauthenticated_client):
     resp = unauthenticated_client.post("/source-videos/sync-content-rewards")
     assert resp.status_code == 401
+
+
+def test_sync_content_rewards_resumes_a_row_left_over_from_a_previous_partial_failure(client):
+    """Real production incident this regression test is written for: a
+    first sync attempt already created this exact row (source +
+    external_source_id set, committed by services/idempotency.py's
+    FAILED-transition commit) before failing partway through the download
+    itself (GOOGLE_DRIVE_API_KEY missing at the time). The next sync must
+    reuse that same row rather than crash on
+    uq_source_videos_source_external_id - and since the row's storage_path
+    is still empty (the download never actually finished), it must also
+    still complete the download into it rather than silently reporting
+    "already exists" with no real file."""
+    from content_factory.api import deps
+    from content_factory.api.main import app
+    from content_factory.db.models.enums import SourceVideoOrigin
+    from content_factory.db.models.source_video import SourceVideo
+
+    db = client.db_session_factory()
+    try:
+        orphaned = SourceVideo(
+            title="Fake Video 1", source=SourceVideoOrigin.CONTENT_REWARDS,
+            external_source_id="ext-1", storage_path="",
+        )
+        db.add(orphaned)
+        db.commit()
+        orphaned_id = orphaned.id
+    finally:
+        db.close()
+
+    fake_provider = _FakeContentSourceProvider()
+    app.dependency_overrides[deps.get_content_source_provider] = lambda: fake_provider
+    try:
+        resp = client.post("/source-videos/sync-content-rewards")
+    finally:
+        del app.dependency_overrides[deps.get_content_source_provider]
+
+    assert resp.status_code == 200
+    body = resp.json()
+    ext1 = next(r for r in body["results"] if r["external_id"] == "ext-1")
+    # Reused the same row - never a second, duplicate SourceVideo.
+    assert ext1["source_video_id"] == orphaned_id
+    # Actually finished the download this time, since it never had before.
+    assert "ext-1" in fake_provider.download_calls
+
+    # storage_path isn't part of the public SourceVideoOut schema (an
+    # internal file path), so check it directly against the DB.
+    db = client.db_session_factory()
+    try:
+        refreshed = db.get(SourceVideo, orphaned_id)
+        assert refreshed.storage_path != ""
+    finally:
+        db.close()
+
+
+def test_sync_content_rewards_does_not_redownload_an_already_synced_video(client):
+    """A SourceVideo row that already has a real storage_path (fully synced
+    by some earlier run) must never be re-downloaded, even without a
+    matching IdempotencyRecord to short-circuit on - the DB-level check
+    added for the regression above must also skip an already-complete row,
+    not just an orphaned/incomplete one."""
+    from content_factory.api import deps
+    from content_factory.api.main import app
+    from content_factory.db.models.enums import SourceVideoOrigin
+    from content_factory.db.models.source_video import SourceVideo
+
+    db = client.db_session_factory()
+    try:
+        already_synced = SourceVideo(
+            title="Fake Video 1", source=SourceVideoOrigin.CONTENT_REWARDS,
+            external_source_id="ext-1", storage_path="/already/on/disk.mp4",
+        )
+        db.add(already_synced)
+        db.commit()
+        already_synced_id = already_synced.id
+    finally:
+        db.close()
+
+    fake_provider = _FakeContentSourceProvider()
+    app.dependency_overrides[deps.get_content_source_provider] = lambda: fake_provider
+    try:
+        resp = client.post("/source-videos/sync-content-rewards")
+    finally:
+        del app.dependency_overrides[deps.get_content_source_provider]
+
+    assert resp.status_code == 200
+    body = resp.json()
+    ext1 = next(r for r in body["results"] if r["external_id"] == "ext-1")
+    assert ext1["source_video_id"] == already_synced_id
+    assert "ext-1" not in fake_provider.download_calls

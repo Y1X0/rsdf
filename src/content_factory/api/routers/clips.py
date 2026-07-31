@@ -148,12 +148,43 @@ def sync_content_rewards(
     for remote_video in content_source_provider.list_available_videos():
 
         def _work(remote_video=remote_video) -> SourceVideo:
-            source_video = clip_service.register_source_video(
-                db, campaign_id=campaign_id, title=remote_video.title, storage_path=""
+            # Real production bug this closes: a previous sync attempt for
+            # this exact external_id can have already created this row (and
+            # committed it - see services/idempotency.py's FAILED-transition
+            # commit) before failing partway through the download below
+            # (e.g. GOOGLE_DRIVE_API_KEY missing). Unconditionally creating a
+            # brand-new row here on the next retry collides with
+            # uq_source_videos_source_external_id, which — since that's a
+            # DB-level flush failure rather than a plain Python exception —
+            # used to crash this endpoint with a 500 instead of the real
+            # constraint error. Reusing the existing row keeps the
+            # constraint's guarantee (never two rows for the same remote
+            # video) while still finishing the download if it never
+            # completed the first time, rather than only ever masking the
+            # problem as "already exists."
+            source_video = (
+                db.query(SourceVideo)
+                .filter(
+                    SourceVideo.source == SourceVideoOrigin.CONTENT_REWARDS,
+                    SourceVideo.external_source_id == remote_video.external_id,
+                )
+                .one_or_none()
             )
-            source_video.source = SourceVideoOrigin.CONTENT_REWARDS
-            source_video.external_source_id = remote_video.external_id
-            db.flush()
+            if source_video is not None and source_video.storage_path:
+                logger.info(
+                    "content_rewards_video_already_synced",
+                    source_video_id=source_video.id,
+                    external_id=remote_video.external_id,
+                )
+                return source_video
+
+            if source_video is None:
+                source_video = clip_service.register_source_video(
+                    db, campaign_id=campaign_id, title=remote_video.title, storage_path=""
+                )
+                source_video.source = SourceVideoOrigin.CONTENT_REWARDS
+                source_video.external_source_id = remote_video.external_id
+                db.flush()
 
             safe_name = _UNSAFE_FILENAME_CHARS.sub("_", f"{remote_video.external_id}.mp4")
             dest_path = storage_dir / f"{source_video.id}_{safe_name}"
