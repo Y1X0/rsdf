@@ -38,6 +38,42 @@ def test_factory_returns_content_rewards_provider_when_configured():
     assert isinstance(get_content_source_provider(settings), ContentRewardsProvider)
 
 
+def test_factory_warns_loudly_when_placeholder_provider_is_selected(monkeypatch):
+    """Real safety requirement: CONTENT_SOURCE_PROVIDER defaults to
+    "manual" (no video source at all) and is never set in render.yaml -
+    selecting the placeholder requires an operator to explicitly set this
+    env var. If that ever happens by mistake, this warning must fire on
+    every single resolution so it's impossible to miss in production logs
+    rather than silently generating synthetic test videos.
+
+    Asserts against the logger call directly (monkeypatched) rather than
+    captured output: this codebase's structlog is configured with
+    PrintLoggerFactory (see logging_config.py), which writes straight to
+    stdout rather than through stdlib logging - pytest's `caplog` fixture,
+    which hooks stdlib logging, never sees it."""
+    from content_factory.content_sources import factory as factory_module
+
+    warnings = []
+    monkeypatch.setattr(factory_module.logger, "warning", lambda event, **kw: warnings.append(event))
+
+    settings = Settings(content_source_provider="content_rewards")
+    get_content_source_provider(settings)
+
+    assert "content_source_provider_is_placeholder" in warnings
+
+
+def test_factory_does_not_warn_for_the_default_manual_provider(monkeypatch):
+    from content_factory.content_sources import factory as factory_module
+
+    warnings = []
+    monkeypatch.setattr(factory_module.logger, "warning", lambda event, **kw: warnings.append(event))
+
+    settings = Settings(content_source_provider="manual")
+    get_content_source_provider(settings)
+
+    assert warnings == []
+
+
 def test_factory_raises_on_unknown_provider():
     settings = Settings(content_source_provider="something_else")
     with pytest.raises(ValueError):
