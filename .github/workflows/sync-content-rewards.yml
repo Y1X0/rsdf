@@ -1,0 +1,81 @@
+name: Sync Content Rewards (real production test)
+
+# Runs the real Content Rewards Connector against the live Render
+# deployment, from a GitHub-hosted runner with normal outbound internet
+# access - unlike this project's Claude Code sessions, whose sandbox
+# network policy blocks both onrender.com and contentrewards.com entirely
+# (see docs/PILOT_ENVIRONMENT_STATUS.md, docs/CONTENT_REWARDS_CONNECTOR.md).
+# This is the only way to actually learn whether Cloudflare blocks a plain
+# server-side request to contentrewards.com/discover, since nothing in a
+# Claude Code session could confirm that either way.
+#
+# Manual trigger only: this calls a real endpoint on a real production
+# service (a real external HTTP request to contentrewards.com and,
+# depending on what it finds, the Google Drive API), so it must never fire
+# automatically on push/PR.
+#
+# One-time setup already done for verify-production.yml applies here too:
+# a repository secret named AUTH_CLIENT_SECRET (Settings -> Secrets and
+# variables -> Actions) with the real value from Render's Environment tab.
+# GitHub automatically redacts registered secrets wherever they'd appear
+# in this job's logs.
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: "Live deployment base URL"
+        required: true
+        default: "https://content-factory-bhhd.onrender.com"
+      auth_client_id:
+        description: "Auth client id"
+        required: true
+        default: "pilot-operator"
+
+jobs:
+  sync:
+    name: Call POST /source-videos/sync-content-rewards on the live deployment
+    runs-on: ubuntu-latest
+    steps:
+      - name: Confirm the deployment is reachable
+        env:
+          BASE_URL: ${{ inputs.base_url }}
+        run: |
+          curl -sS --max-time 20 "$BASE_URL/health" | tee /tmp/health.json
+          echo
+          echo "(a non-200 above, or a connection failure, means the deploy isn't live yet - stop and check Render before re-running this)"
+
+      - name: Get an auth token
+        env:
+          BASE_URL: ${{ inputs.base_url }}
+          AUTH_CLIENT_ID: ${{ inputs.auth_client_id }}
+          AUTH_CLIENT_SECRET: ${{ secrets.AUTH_CLIENT_SECRET }}
+        run: |
+          TOKEN=$(curl -sS --max-time 20 -X POST "$BASE_URL/auth/token" \
+            -H "content-type: application/json" \
+            --data "$(python3 -c 'import json,os; print(json.dumps({"client_id":os.environ["AUTH_CLIENT_ID"],"client_secret":os.environ["AUTH_CLIENT_SECRET"]}))')" \
+            | python3 -c "import sys,json;print(json.load(sys.stdin)['access_token'])")
+          echo "AUTH_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+
+      - name: Call the real sync endpoint
+        env:
+          BASE_URL: ${{ inputs.base_url }}
+        run: |
+          echo "== POST $BASE_URL/source-videos/sync-content-rewards =="
+          HTTP_CODE=$(curl -sS --max-time 120 -o /tmp/sync_response.json -w "%{http_code}" \
+            -X POST "$BASE_URL/source-videos/sync-content-rewards" \
+            -H "Authorization: Bearer $AUTH_TOKEN")
+          echo "HTTP status: $HTTP_CODE"
+          echo "Response body:"
+          cat /tmp/sync_response.json
+          echo
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "FAILED: sync endpoint returned $HTTP_CODE - see the body above for the real error"
+            echo "(a 502/503 with a Cloudflare-shaped body most likely means Cloudflare blocked the server-side request - see docs/CONTENT_REWARDS_CONNECTOR.md)"
+            exit 1
+          fi
+          COUNT=$(python3 -c "import json; print(len(json.load(open('/tmp/sync_response.json'))['results']))")
+          echo "Videos found and registered this run: $COUNT"
+          if [ "$COUNT" = "0" ]; then
+            echo "Reached Content Rewards successfully, but found 0 campaigns with a public Google Drive link right now - not necessarily a failure, see the connector's real coverage scope in docs/CONTENT_REWARDS_CONNECTOR.md"
+          fi
