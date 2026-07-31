@@ -2,12 +2,14 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import create_engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from content_factory.db.base import Base
-from content_factory.db.models.enums import ProcessingStatus
+from content_factory.db.models.enums import ProcessingStatus, SourceVideoOrigin
 from content_factory.db.models.idempotency import IdempotencyRecord
+from content_factory.db.models.source_video import SourceVideo
 from content_factory.services.idempotency import (
     STALE_IN_PROGRESS_THRESHOLD,
     IdempotencyConflict,
@@ -192,6 +194,62 @@ def test_run_idempotent_recovers_a_stale_in_progress_record_and_allows_retry(db_
     )
     assert created is True
     assert entity.value == "recovered"
+
+
+def test_run_idempotent_recovers_when_work_fn_fails_via_a_db_level_error(db_session):
+    """Regression for the real Content Rewards production incident: a
+    retried work_fn tried to create a second SourceVideo row for an
+    external_id a previous, partially-failed attempt had already committed
+    - hitting uq_source_videos_source_external_id at flush time. That's a
+    DB-level failure, not a plain Python exception, so it leaves the
+    session in SQLAlchemy's "pending rollback" state. The except block's
+    own `record.status = FAILED; db.commit()` then raised
+    sqlalchemy.exc.PendingRollbackError on top of it, masking the real
+    IntegrityError and turning it into an opaque, unrecorded crash. This
+    must instead roll back, durably record FAILED, and re-raise the real
+    original error."""
+    # Committed, not just flushed - matches the real incident, where the
+    # first video's row was durably committed (either via the success path
+    # or the FAILED-transition commit) in an earlier, already-finished
+    # request before this retry's request ever began.
+    existing = SourceVideo(
+        title="existing", storage_path="", source=SourceVideoOrigin.CONTENT_REWARDS, external_source_id="dup-1"
+    )
+    db_session.add(existing)
+    db_session.commit()
+
+    def work():
+        duplicate = SourceVideo(
+            title="new", storage_path="", source=SourceVideoOrigin.CONTENT_REWARDS, external_source_id="dup-1"
+        )
+        db_session.add(duplicate)
+        db_session.flush()  # real DB-level failure (UniqueViolation), not a plain exception
+        return duplicate
+
+    def load_existing(entity_id):
+        raise AssertionError("should not be called - nothing ever completed")
+
+    with pytest.raises(IntegrityError):
+        run_idempotent(
+            db_session, scope="dup.scope", idempotency_key="dup-key", payload={"a": 1},
+            entity_type="source_video", work_fn=work, load_existing=load_existing,
+        )
+
+    # The session must be usable again (a real rollback happened, not left
+    # broken), and the failure durably recorded rather than swallowed.
+    record = (
+        db_session.query(IdempotencyRecord)
+        .filter(IdempotencyRecord.scope == "dup.scope", IdempotencyRecord.key == "dup-key")
+        .one_or_none()
+    )
+    assert record is not None
+    assert record.status == ProcessingStatus.FAILED
+
+    # And the pre-existing row survived untouched - never overwritten or
+    # duplicated by the failed retry.
+    survivors = db_session.query(SourceVideo).filter(SourceVideo.external_source_id == "dup-1").all()
+    assert len(survivors) == 1
+    assert survivors[0].id == existing.id
 
 
 def test_get_or_create_record_falls_back_to_winner_on_concurrent_insert_race(db_session):

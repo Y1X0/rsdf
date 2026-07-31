@@ -167,6 +167,23 @@ def run_idempotent(
         logger.info("idempotent_work_completed", scope=scope, key=key, entity_id=entity.id)
         return entity, True
     except Exception as exc:
+        # Real production bug this closes: work_fn() can fail via a DB-level
+        # error (e.g. a flush that violates a unique constraint), which
+        # leaves the session in SQLAlchemy's "pending rollback" state - any
+        # further use of it (setting record.status below, then commit())
+        # raises PendingRollbackError instead of ever recording the real
+        # failure, masking the original exception under a second, more
+        # opaque one. Rolling back first always restores the session to a
+        # usable state regardless of why work_fn failed; `record` itself is
+        # now expired/detached (the failed flush's changes were reverted
+        # too), so it's re-fetched before being updated.
+        db.rollback()
+        # A never-before-committed record (this was the very first attempt)
+        # doesn't survive the rollback above, so it's re-created here rather
+        # than re-queried - `_get_or_create_record` already handles both that
+        # case and "the record was already durably committed FAILED/
+        # IN_PROGRESS from an earlier attempt" identically.
+        record, _ = _get_or_create_record(db, scope=scope, key=key, fingerprint=fingerprint)
         record.status = ProcessingStatus.FAILED
         record.error_message = str(exc)
         db.commit()
