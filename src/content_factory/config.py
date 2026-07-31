@@ -66,10 +66,19 @@ class Settings(BaseSettings):
     # --- Content Rewards connector (content_sources/) ---
     # "manual" (default): no external video source, sourcing stays exactly
     # as manual as it is today (POST /source-videos upload). "content_rewards"
-    # selects ContentRewardsProvider - currently a placeholder returning
-    # synthetic test videos (Milestone 1); real contentrewards.com requests
-    # are wired in a later milestone once captured from the browser.
+    # selects ContentRewardsProvider: reads contentrewards.com/discover's
+    # public campaign list (no login/cookies needed) and downloads from
+    # whichever campaigns publish a public Google Drive folder link in their
+    # own description text - see docs/CONTENT_REWARDS_CONNECTOR.md for the
+    # real-world discovery this is built from and its known limitations
+    # (Cloudflare may block a non-browser request; many campaigns hide their
+    # footage behind a separate per-campaign Whop membership instead of a
+    # public link, and are simply skipped rather than guessed at).
     content_source_provider: str = "manual"  # "content_rewards" | "manual"
+    # Google Drive API key (no OAuth) used only to list/download files from
+    # a *publicly shared* ("Anyone with the link can view") folder - the
+    # kind Content Rewards campaigns commonly paste into their description.
+    google_drive_api_key: str = ""
 
     # --- Auth (v1.1, PHASE1_AUDIT.md F2) ---
     # No user database in Phase 1 — a small, fixed set of pre-shared service

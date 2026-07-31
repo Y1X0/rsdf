@@ -51,6 +51,14 @@ notifications = [
 publishing = [
     "httpx>=0.27",
 ]
+# Content Rewards Connector (content_sources/): real ContentRewardsProvider
+# reads contentrewards.com/discover and the public Google Drive API. Without
+# this extra installed, CONTENT_SOURCE_PROVIDER=content_rewards raises a
+# clear RuntimeError on first use rather than a hard import-time failure —
+# never installed by default (CONTENT_SOURCE_PROVIDER defaults to "manual").
+content_rewards = [
+    "httpx>=0.27",
+]
 # Production Hardening Sprint (H4): shared-storage rate limiting, needed the
 # moment more than one worker process is run. Without this extra installed,
 # RATE_LIMIT_BACKEND=redis falls back to the in-process limiter with a

@@ -23,20 +23,25 @@ def get_content_source_provider(settings: Settings) -> ContentSourceProvider:
         # operator has to set by hand (default is "manual"; render.yaml
         # does not set this) - but if that ever happens by mistake, this
         # warning fires on every single request that touches the sync
-        # endpoint, making a placeholder-in-production misconfiguration
-        # immediately visible in structured logs rather than silently
-        # producing synthetic test videos.
+        # endpoint, making it immediately visible in structured logs. This
+        # provider makes real external HTTP calls (contentrewards.com,
+        # Google Drive) and has never been verified against the live site
+        # by this session (Cloudflare blocks non-browser tools here) - see
+        # docs/CONTENT_REWARDS_CONNECTOR.md for the real verification
+        # workflow and this provider's known coverage gaps.
         logger.warning(
-            "content_source_provider_is_placeholder",
+            "content_source_provider_is_content_rewards",
             detail=(
-                "CONTENT_SOURCE_PROVIDER=content_rewards currently selects a "
-                "PLACEHOLDER (ContentRewardsProvider) that returns synthetic test "
-                "videos, not real Content Rewards data - see "
-                "docs/CONTENT_REWARDS_CONNECTOR.md. If this is unexpected, unset "
-                "CONTENT_SOURCE_PROVIDER (default 'manual' disables sourcing entirely)."
+                "CONTENT_SOURCE_PROVIDER=content_rewards selects ContentRewardsProvider, "
+                "which makes real external requests to contentrewards.com and the Google "
+                "Drive API - see docs/CONTENT_REWARDS_CONNECTOR.md for its known "
+                "limitations (only campaigns with a public Google Drive link in their "
+                "description are covered; Cloudflare may block requests). If this is "
+                "unexpected, unset CONTENT_SOURCE_PROVIDER (default 'manual' disables "
+                "sourcing entirely)."
             ),
         )
-        return ContentRewardsProvider()
+        return ContentRewardsProvider(google_drive_api_key=settings.google_drive_api_key)
 
     if provider == "manual":
         return ManualContentSourceProvider()

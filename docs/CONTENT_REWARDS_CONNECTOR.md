@@ -20,38 +20,65 @@ route) already does — a fetched video enters the transcribe → analyze →
 render → review → publish pipeline identically to an uploaded one, with
 zero changes to any of those existing routes/services.
 
-## Current status: Milestone 1 (placeholder, not yet real)
+## Current status: Milestone 3 (real, unverified against the live site)
 
 **Content Rewards (`contentrewards.com`) has no confirmed public,
 creator-facing API.** Verified this session: the site itself returns
-HTTP 403 to unauthenticated requests (Cloudflare-protected), and while
-Whop (the platform Content Rewards is hosted on) does have a real,
-documented public API (`whopsdk-python`, API-key auth), its resources are
-commerce-level (Payments, Companies, Memberships, Users) — nothing
-campaign- or content-submission-specific.
+HTTP 403 to unauthenticated requests from non-browser tools
+(Cloudflare-protected), and while Whop (the platform Content Rewards is
+hosted on) does have a real, documented public API (`whopsdk-python`,
+API-key auth), its resources are commerce-level (Payments, Companies,
+Memberships, Users) — nothing campaign- or content-submission-specific.
 
-**Chosen path (confirmed with the project owner): reverse-engineer the
-site's own internal API**, captured from the browser's DevTools Network
-tab while logged in, rather than Playwright browser automation — lighter,
-no new heavy dependency/system libs in the Docker image, at the accepted
-cost of relying on an undocumented surface that can change without
-notice.
+**What Milestone 2's real browser-based discovery actually found**
+(captured live, from a real logged-in browser session — see
+`scripts/discover_content_rewards_api.py`):
 
-Until those exact requests are captured, `CONTENT_SOURCE_PROVIDER=content_rewards`
-selects `ContentRewardsProvider` — a **clearly-labeled placeholder**:
-`list_available_videos()` returns two synthetic, `[PLACEHOLDER]`-titled
-entries, and `download_video()` generates a real, tiny, genuinely playable
-ffmpeg video for each (not fake bytes) rather than making any real network
-call. This exists so the rest of the connector — the DB columns, the
-idempotent sync endpoint, the fact that a fetched video really does flow
-through the unmodified pipeline — is built and verified today, without
-waiting on real credentials.
+- `contentrewards.com/discover` is a Next.js App Router page. A plain page
+  load's response text embeds one clean JSON object —
+  `{"bannerCampaigns": [...], "featuredCampaigns": [...],
+  "featuredMixCampaigns": [...], "success": true}` — listing every public
+  campaign (brand, budget, pay-per-view rate, free-text `description`,
+  ...). **No login or cookies are required to read this.**
+- There is no per-campaign "list videos" or "get download link" API.
+  Clicking into an actual campaign leaves contentrewards.com entirely and
+  lands on a *separate Whop community* — each campaign is its own Whop
+  business. From there, footage is delivered one of two incompatible ways
+  depending on the brand: (a) a public link (commonly a Google Drive
+  folder) pasted directly into the campaign's own `description` text, or
+  (b) a locked Whop mini-app that requires personally joining that
+  specific campaign first, with no consistent structure across brands.
+
+**Chosen scope (confirmed with the project owner) given that finding:**
+`ContentRewardsProvider` only automates case (a) — campaigns whose
+description already contains a public Google Drive folder link. Case (b)
+campaigns are silently skipped; there is no way to automate those
+generically without joining each one individually, so they stay exactly
+as manual as they are today.
+
+`list_available_videos()` fetches `/discover` (plain `httpx`, no
+auth/cookies) and parses out that JSON object; `download_video()` reads
+the matched campaign's Google Drive folder via the public,
+API-key-only (no OAuth) Drive API, since these are folders shared "Anyone
+with the link can view".
+
+**Real, unverified risk**: every non-browser tool tried against
+`contentrewards.com` this session (Claude's own `WebFetch`, `curl`) got
+HTTP 403 from Cloudflare. The discovery above all came from a real,
+logged-in *browser* session, which Cloudflare let through — whether a
+plain server-side `httpx` request also gets through is genuinely unknown
+until it's run for real (see Verification below). If Cloudflare blocks
+it, `list_available_videos()` raises `ProviderRequestRejected`/
+`RetryableProviderError` like any other provider failure — not a crash —
+and the sync endpoint's existing `agent_run`/cost-ledger/idempotency
+wiring records it like any other failed external call.
 
 ## Configuration
 
 | Env var | Default | Meaning |
 |---|---|---|
-| `CONTENT_SOURCE_PROVIDER` | `manual` | `"manual"` (default, no-op — sourcing stays exactly as manual as it is today) or `"content_rewards"` (Milestone 1's placeholder; a real provider in a later milestone) |
+| `CONTENT_SOURCE_PROVIDER` | `manual` | `"manual"` (default, no-op — sourcing stays exactly as manual as it is today) or `"content_rewards"` (real `ContentRewardsProvider`, scope above) |
+| `GOOGLE_DRIVE_API_KEY` | `""` | A Google Cloud API key (not OAuth) used only to read publicly-shared Drive folders. Required for `download_video()`; `list_available_videos()` works without it. |
 
 ## Milestone 2 (in progress): API discovery
 
@@ -128,40 +155,50 @@ cookie, `Authorization` header value, or access token here or anywhere
 else — same rule already applied to every other credential this project
 handles (`AUTH_CLIENT_SECRET`, `IG_ACCESS_TOKEN`).
 
-### After discovery: building the real provider (not started)
+### Milestone 3 (done, this session): the real provider
 
-Once the real request/response shapes are known:
+`providers/content_rewards_provider.py` now makes real requests: a plain
+`GET https://contentrewards.com/discover` (no auth), then for each
+campaign whose `description` contains a Google Drive folder link, the
+public Drive API to list and download the first video file in that
+folder. `content_sources/base.py`'s interface, `factory.py`'s selection
+logic, and every caller (the sync endpoint, `clip_service.register_source_video`)
+are unchanged. Tested this session only against mocked HTTP responses
+(`tests/unit/test_content_sources.py`) — never a live network call,
+matching this codebase's zero-secrets-required test philosophy.
 
-1. `providers/content_rewards_provider.py`'s `list_available_videos()`/
-   `download_video()` get rewritten to make those exact real `httpx`
-   calls — `content_sources/base.py`'s interface, `factory.py`'s
-   selection logic, and every caller (the sync endpoint,
-   `clip_service.register_source_video`) stay exactly as they are.
-2. Whatever credential the real calls need (a session cookie or a
-   recorded auth header) goes directly into Render's Environment tab (or
-   a GitHub Actions secret for the verification workflow) — never typed
-   into chat.
-3. Real verification reuses the same `workflow_dispatch`-only GitHub
-   Actions pattern as `verify-production.yml`/
-   `check-production-health.yml`: a new `sync-content-rewards.yml`,
-   manual trigger only, using a GitHub repository secret for whatever
-   credential the real requests need.
+### Verification (not done yet — needs a real run)
+
+Real verification reuses the same `workflow_dispatch`-only GitHub Actions
+pattern as `verify-production.yml`/`check-production-health.yml`: a new
+`sync-content-rewards.yml`, manual trigger only, calling
+`POST /source-videos/sync-content-rewards` against the live deployment
+with `CONTENT_SOURCE_PROVIDER=content_rewards` and a real
+`GOOGLE_DRIVE_API_KEY` set, and reporting how many real videos were
+found/queued. This is the only way to actually learn whether Cloudflare
+blocks the plain `httpx` request — nothing in this session could confirm
+that either way.
 
 ## Security notes
 
-- Whatever credential Milestone 2 needs (a session cookie or a recorded
-  auth header) is a real secret — same handling as every other credential
-  in this project: never in chat, only in Render's Environment tab or a
-  GitHub Actions secret.
-- A session cookie/password is equivalent to full account access — more
-  sensitive than a typical API key. Store it encrypted at rest via
-  `services/token_encryption.py` (the same Fernet-based encryption already
-  protecting `OwnedAccount.encrypted_oauth_token`) rather than a plaintext
-  config field.
-- The real provider must validate a downloaded file is actually a video
-  (e.g. via `ffprobe`) before it's ever handed to transcription/render —
-  an expired/broken session could otherwise silently download an HTML
-  login page instead of a video.
+- `GOOGLE_DRIVE_API_KEY` is a plain API key (not a user credential/OAuth
+  token) scoped only to reading files the folder owner already made
+  public — same handling as every other API key in this project
+  (`GROQ_API_KEY`, `ANTHROPIC_API_KEY`): a Render environment variable,
+  never typed into chat.
+- The provider does not use or store any Content Rewards/Whop session
+  cookie or login credential at all — by design, it only ever reads data
+  that requires no authentication. If a future milestone needs to cover
+  the locked-mini-app campaigns (case (b) above), that would require a
+  real per-campaign membership/session and should reuse
+  `services/token_encryption.py` (the same Fernet-based encryption
+  already protecting `OwnedAccount.encrypted_oauth_token`) rather than a
+  plaintext config field — not attempted here.
+- A downloaded file is trusted as-is once the Drive API returns 200; a
+  broken/renamed Drive file could in principle not be a real video. This
+  mirrors every other provider's assumption in this codebase (no provider
+  currently `ffprobe`-validates a downloaded asset) — worth hardening if
+  real-world runs show it's an actual problem, not before.
 - Rate-limit/back off the connector's own requests (reuse `retry.py`'s
   `RetryableProviderError`/`describe_http_error`, exactly like every other
   real provider in this codebase) — scraping too aggressively risks the
