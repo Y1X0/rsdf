@@ -79,6 +79,14 @@ class Settings(BaseSettings):
     # a *publicly shared* ("Anyone with the link can view") folder - the
     # kind Content Rewards campaigns commonly paste into their description.
     google_drive_api_key: str = ""
+    # A Google Drive folder is external, uncontrolled content (unlike a
+    # manual upload through our own form) - this bounds how large a single
+    # download is allowed to be, checked against Content-Length up front
+    # when present and enforced during streaming either way (a missing or
+    # dishonest Content-Length can't bypass it). 2 GiB comfortably covers a
+    # single long-form source video without ever guessing an upper bound
+    # too small to be worth having.
+    max_content_source_video_bytes: int = 2 * 1024 * 1024 * 1024
 
     # --- Auth (v1.1, PHASE1_AUDIT.md F2) ---
     # No user database in Phase 1 — a small, fixed set of pre-shared service

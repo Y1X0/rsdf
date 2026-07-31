@@ -37,10 +37,20 @@ any other provider failure, not a crash.
 """
 
 import json
+import os
 import re
 
 from content_factory.content_sources.base import ContentSourceProvider, RemoteCampaignVideo
 from content_factory.retry import ProviderRequestRejected, RetryableProviderError, describe_http_error
+
+_DEFAULT_MAX_VIDEO_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB — matches config.py's default
+
+
+class _DownloadExceededSizeLimit(Exception):
+    """Internal signal only — download_video() always converts this to a
+    ProviderRequestRejected after cleaning up the partial file, never lets
+    it escape as-is."""
+
 
 _DISCOVER_URL = "https://contentrewards.com/discover"
 _DRIVE_FOLDER_RE = re.compile(r"https://drive\.google\.com/drive/folders/[\w-]+")
@@ -56,8 +66,9 @@ _CAMPAIGN_LIST_KEYS = ("bannerCampaigns", "featuredCampaigns", "featuredMixCampa
 
 
 class ContentRewardsProvider(ContentSourceProvider):
-    def __init__(self, google_drive_api_key: str = "") -> None:
+    def __init__(self, google_drive_api_key: str = "", max_video_bytes: int = _DEFAULT_MAX_VIDEO_BYTES) -> None:
         self._google_drive_api_key = google_drive_api_key
+        self._max_video_bytes = max_video_bytes
 
     def list_available_videos(self) -> list[RemoteCampaignVideo]:
         httpx = _import_httpx()
@@ -144,27 +155,55 @@ class ContentRewardsProvider(ContentSourceProvider):
             raise ProviderRequestRejected(f"No video files found in Google Drive folder {folder_id}")
         file_id = files[0]["id"]
 
+        # Streamed, not `httpx.get` + `.content`: a Google Drive folder is
+        # external, uncontrolled content (unlike a manual upload through our
+        # own form), so nothing here is allowed to load an unbounded amount
+        # of it into memory or onto disk. Content-Length (when the server
+        # sends one) is checked up front to reject oversized files without
+        # downloading a single byte; actual bytes received are also counted
+        # during streaming either way, since a missing or dishonest
+        # Content-Length can't be trusted to enforce the limit by itself.
         try:
-            download_response = httpx.get(
+            with httpx.stream(
+                "GET",
                 f"https://www.googleapis.com/drive/v3/files/{file_id}",
                 params={"key": self._google_drive_api_key, "alt": "media"},
                 timeout=120.0,
-            )
+            ) as download_response:
+                if download_response.status_code >= 500:
+                    raise RetryableProviderError(
+                        f"Google Drive file download returned {download_response.status_code}"
+                    )
+                if download_response.status_code >= 400:
+                    raise ProviderRequestRejected(
+                        f"Google Drive file download returned {download_response.status_code}"
+                    )
+
+                content_length = download_response.headers.get("content-length")
+                if content_length is not None and int(content_length) > self._max_video_bytes:
+                    raise ProviderRequestRejected(
+                        f"Google Drive file {file_id} is {content_length} bytes, exceeding the "
+                        f"{self._max_video_bytes}-byte limit (MAX_CONTENT_SOURCE_VIDEO_BYTES)"
+                    )
+
+                bytes_written = 0
+                try:
+                    with open(destination_path, "wb") as f:
+                        for chunk in download_response.iter_bytes():
+                            bytes_written += len(chunk)
+                            if bytes_written > self._max_video_bytes:
+                                raise _DownloadExceededSizeLimit()
+                            f.write(chunk)
+                except _DownloadExceededSizeLimit:
+                    if os.path.exists(destination_path):
+                        os.remove(destination_path)
+                    raise ProviderRequestRejected(
+                        f"Google Drive file {file_id} exceeded the {self._max_video_bytes}-byte "
+                        f"limit (MAX_CONTENT_SOURCE_VIDEO_BYTES) while streaming - partial file "
+                        f"removed"
+                    ) from None
         except httpx.TimeoutException as exc:
             raise RetryableProviderError("Google Drive file download timed out") from exc
-
-        if download_response.status_code >= 500:
-            raise RetryableProviderError(
-                f"Google Drive file download returned {download_response.status_code}"
-            )
-        if download_response.status_code >= 400:
-            raise ProviderRequestRejected(
-                f"Google Drive file download returned {download_response.status_code}: "
-                f"{describe_http_error(download_response)}"
-            )
-
-        with open(destination_path, "wb") as f:
-            f.write(download_response.content)
 
 
 def _import_httpx():

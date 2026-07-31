@@ -41,7 +41,10 @@ def get_content_source_provider(settings: Settings) -> ContentSourceProvider:
                 "sourcing entirely)."
             ),
         )
-        return ContentRewardsProvider(google_drive_api_key=settings.google_drive_api_key)
+        return ContentRewardsProvider(
+            google_drive_api_key=settings.google_drive_api_key,
+            max_video_bytes=settings.max_content_source_video_bytes,
+        )
 
     if provider == "manual":
         return ManualContentSourceProvider()

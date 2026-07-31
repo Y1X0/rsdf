@@ -38,6 +38,27 @@ class _FakeResponse:
         return self._json_body
 
 
+class _FakeStreamResponse:
+    """Stands in for what `with httpx.stream(...) as response:` yields —
+    a context manager whose body is only read via `iter_bytes()`, matching
+    the real download path (never `.content`, since the whole point is to
+    never load an unbounded external file into memory in one shot)."""
+
+    def __init__(self, status_code: int, chunks: list[bytes] | None = None, headers: dict | None = None):
+        self.status_code = status_code
+        self.headers = headers or {}
+        self._chunks = chunks or []
+
+    def iter_bytes(self):
+        yield from self._chunks
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+
 def _discover_page_html(campaigns: dict) -> str:
     """A minimal stand-in for the real page's response text: this provider
     only ever looks for the `{"bannerCampaigns":...}` JSON object inside a
@@ -185,32 +206,75 @@ def test_content_rewards_provider_download_requires_google_drive_api_key():
         provider.download_video(video, "/tmp/whatever.mp4")
 
 
-def test_content_rewards_provider_downloads_the_first_video_file_in_the_folder(monkeypatch, tmp_path):
-    responses = [
-        _FakeResponse(200, json_body={"files": [{"id": "file-1", "name": "raw.mp4", "mimeType": "video/mp4"}]}),
-        _FakeResponse(200, content=b"fake mp4 bytes"),
-    ]
-    monkeypatch.setattr(httpx, "get", lambda *a, **k: responses.pop(0))
-
-    provider = ContentRewardsProvider(google_drive_api_key="test-key")
-    video = RemoteCampaignVideo(
+def _video_with_drive_folder() -> RemoteCampaignVideo:
+    return RemoteCampaignVideo(
         external_id="camp-1", title="t", campaign_name="c", duration_s=None,
         download_url="https://drive.google.com/drive/folders/abc123XYZ", source_page_url="",
     )
+
+
+def _mock_folder_listing(monkeypatch, files: list[dict]) -> None:
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _FakeResponse(200, json_body={"files": files}))
+
+
+def test_content_rewards_provider_downloads_the_first_video_file_in_the_folder(monkeypatch, tmp_path):
+    _mock_folder_listing(monkeypatch, [{"id": "file-1", "name": "raw.mp4", "mimeType": "video/mp4"}])
+    monkeypatch.setattr(
+        httpx, "stream",
+        lambda method, url, **k: _FakeStreamResponse(200, chunks=[b"fake ", b"mp4 bytes"]),
+    )
+
+    provider = ContentRewardsProvider(google_drive_api_key="test-key")
     dest = tmp_path / "out.mp4"
 
-    provider.download_video(video, str(dest))
+    provider.download_video(_video_with_drive_folder(), str(dest))
 
     assert dest.read_bytes() == b"fake mp4 bytes"
 
 
 def test_content_rewards_provider_download_raises_when_folder_has_no_videos(monkeypatch):
-    monkeypatch.setattr(httpx, "get", lambda *a, **k: _FakeResponse(200, json_body={"files": []}))
+    _mock_folder_listing(monkeypatch, [])
 
     provider = ContentRewardsProvider(google_drive_api_key="test-key")
-    video = RemoteCampaignVideo(
-        external_id="camp-1", title="t", campaign_name="c", duration_s=None,
-        download_url="https://drive.google.com/drive/folders/abc123XYZ", source_page_url="",
-    )
     with pytest.raises(ProviderRequestRejected):
-        provider.download_video(video, "/tmp/whatever.mp4")
+        provider.download_video(_video_with_drive_folder(), "/tmp/whatever.mp4")
+
+
+def test_content_rewards_provider_download_rejects_when_content_length_exceeds_limit(monkeypatch, tmp_path):
+    """A Google Drive folder is external, uncontrolled content - the size
+    cap must be enforced from the Content-Length header up front, without
+    ever writing a byte to disk, when the server sends one."""
+    _mock_folder_listing(monkeypatch, [{"id": "file-1", "name": "raw.mp4", "mimeType": "video/mp4"}])
+    monkeypatch.setattr(
+        httpx, "stream",
+        lambda method, url, **k: _FakeStreamResponse(
+            200, chunks=[b"x" * 100], headers={"content-length": "999999999999"}
+        ),
+    )
+
+    provider = ContentRewardsProvider(google_drive_api_key="test-key", max_video_bytes=1000)
+    dest = tmp_path / "out.mp4"
+
+    with pytest.raises(ProviderRequestRejected):
+        provider.download_video(_video_with_drive_folder(), str(dest))
+
+    assert not dest.exists()
+
+
+def test_content_rewards_provider_download_stops_and_cleans_up_when_streamed_bytes_exceed_limit(monkeypatch, tmp_path):
+    """No Content-Length header at all this time - the limit must still be
+    enforced by counting actual bytes as they stream in, and any partial
+    file already written must be removed, not left behind half-downloaded."""
+    _mock_folder_listing(monkeypatch, [{"id": "file-1", "name": "raw.mp4", "mimeType": "video/mp4"}])
+    monkeypatch.setattr(
+        httpx, "stream",
+        lambda method, url, **k: _FakeStreamResponse(200, chunks=[b"x" * 600, b"y" * 600]),
+    )
+
+    provider = ContentRewardsProvider(google_drive_api_key="test-key", max_video_bytes=1000)
+    dest = tmp_path / "out.mp4"
+
+    with pytest.raises(ProviderRequestRejected):
+        provider.download_video(_video_with_drive_folder(), str(dest))
+
+    assert not dest.exists()
