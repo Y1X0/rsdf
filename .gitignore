@@ -9,3 +9,8 @@ var/
 .coverage
 *.db
 dump.rdb
+
+# scripts/discover_content_rewards_api.py output + real browser session data
+# (Content Rewards Connector, Milestone 2 discovery) - never committed.
+.content_rewards_browser_profile/
+content_rewards_discovery.jsonl

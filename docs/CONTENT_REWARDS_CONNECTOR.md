@@ -53,28 +53,95 @@ waiting on real credentials.
 |---|---|---|
 | `CONTENT_SOURCE_PROVIDER` | `manual` | `"manual"` (default, no-op — sourcing stays exactly as manual as it is today) or `"content_rewards"` (Milestone 1's placeholder; a real provider in a later milestone) |
 
-## Milestone 2 (not started): the real provider
+## Milestone 2 (in progress): API discovery
 
-To move from the placeholder to a real integration:
+To move from the placeholder to a real integration, the exact internal
+requests Content Rewards' own web app makes have to be captured first —
+`scripts/discover_content_rewards_api.py` does this passively and safely,
+without ever writing a cookie/token/secret value to disk or chat, and
+without any Cloudflare bypass (a real human solves any real challenge, in
+a real browser, visually).
 
-1. Log into `https://contentrewards.com/discover` in a real browser with
-   DevTools open (F12 → Network tab).
-2. Trigger the actions "list my available campaigns" and "view/download a
-   campaign's video" in the UI, and capture the real request(s) the page
-   itself makes: URL, method, request headers' *names* (not values),
-   and the response JSON shape.
-3. **Never paste a real cookie, `Authorization` header value, or access
-   token into a chat/AI session** — same rule already applied to every
-   other credential this project handles (`AUTH_CLIENT_SECRET`,
-   `IG_ACCESS_TOKEN`). Hand over the request/response *shape* only; the
-   real secret value goes directly into Render's Environment tab (or a
-   GitHub Actions secret for the verification workflow), never here.
-4. `providers/content_rewards_provider.py`'s `list_available_videos()`/
+**Discovery-only device requirement: none.** This works from a phone
+alone via a Codespace, since GitHub Codespaces has no display server by
+default and a scripted/blind login can't be built without knowing the
+site's real form markup in advance. The procedure instead gives you a
+real, interactive, headed Chromium window — viewable and controllable
+from your phone's own browser via VNC — so you log in exactly like a
+normal visitor while the script listens in the background.
+
+### One-time Codespace setup
+
+```bash
+# System packages for a virtual display + VNC-over-HTTP:
+sudo apt-get update && sudo apt-get install -y xvfb x11vnc novnc websockify
+
+# Playwright + a real Chromium build:
+pip install playwright
+playwright install --with-deps chromium
+
+# Start a virtual display, then a VNC server pointed at it, then noVNC
+# (a browser-based VNC client) bridging it to plain HTTP/WebSocket:
+Xvfb :99 -screen 0 1280x800x24 &
+export DISPLAY=:99
+x11vnc -display :99 -forever -nopw -quiet -rfbport 5900 &
+websockify --web=/usr/share/novnc 6080 localhost:5900 &
+```
+
+Then, in the Codespace's **Ports** tab: forward port `6080`, set its
+visibility to **Private** (so only your own GitHub login can reach it —
+this is the access control, since `-nopw` alone has none), and open the
+forwarded URL suffixed with `/vnc.html?autoconnect=true&resize=remote` in
+your phone's browser. You'll see a live view of whatever runs on the
+Codespace's virtual display.
+
+### Running the capture
+
+In the Codespace's terminal (a second phone browser tab, e.g. via
+vscode.dev or the Codespace web UI):
+
+```bash
+export DISPLAY=:99
+python scripts/discover_content_rewards_api.py
+```
+
+A real Chromium window opens on the virtual display (visible in your VNC
+tab) already pointed at `contentrewards.com/discover`. In that window:
+
+1. Log in normally. If Cloudflare shows a challenge, solve it yourself,
+   visually — that's a real human passing a real challenge, not a bypass.
+2. Open your campaigns/discover list.
+3. Open one campaign's video and its download link.
+
+Switch back to the terminal tab and press **Ctrl+C** when done. The
+script writes `content_rewards_discovery.jsonl` (repo root, gitignored) —
+each line is one matching request/response already reduced to: URL,
+method, header **names only** (sensitive-looking ones flagged, values
+never recorded), and body **shape** (JSON key names and types, never real
+values). The browser's own session data lives only in
+`.content_rewards_browser_profile/` (also gitignored) — nothing from
+either file is ever committed.
+
+Read `content_rewards_discovery.jsonl` yourself, confirm it holds no real
+values, and paste **its contents** back into chat. **Never** paste a raw
+cookie, `Authorization` header value, or access token here or anywhere
+else — same rule already applied to every other credential this project
+handles (`AUTH_CLIENT_SECRET`, `IG_ACCESS_TOKEN`).
+
+### After discovery: building the real provider (not started)
+
+Once the real request/response shapes are known:
+
+1. `providers/content_rewards_provider.py`'s `list_available_videos()`/
    `download_video()` get rewritten to make those exact real `httpx`
    calls — `content_sources/base.py`'s interface, `factory.py`'s
    selection logic, and every caller (the sync endpoint,
    `clip_service.register_source_video`) stay exactly as they are.
-5. Real verification reuses the same `workflow_dispatch`-only GitHub
+2. Whatever credential the real calls need (a session cookie or a
+   recorded auth header) goes directly into Render's Environment tab (or
+   a GitHub Actions secret for the verification workflow) — never typed
+   into chat.
+3. Real verification reuses the same `workflow_dispatch`-only GitHub
    Actions pattern as `verify-production.yml`/
    `check-production-health.yml`: a new `sync-content-rewards.yml`,
    manual trigger only, using a GitHub repository secret for whatever
