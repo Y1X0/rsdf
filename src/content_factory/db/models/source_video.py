@@ -1,8 +1,8 @@
-from sqlalchemy import JSON, Enum, Float, ForeignKey, String, Text
+from sqlalchemy import JSON, Enum, Float, ForeignKey, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from content_factory.db.base import Base
-from content_factory.db.models.enums import ProcessingStatus
+from content_factory.db.models.enums import ProcessingStatus, SourceVideoOrigin
 from content_factory.db.models.mixins import TimestampMixin
 
 
@@ -35,9 +35,19 @@ class SourceVideo(TimestampMixin, Base):
     never populates it, so it's simply absent unless a deployment has
     explicitly opted into real diarization; ClipRenderer falls back to
     single-speaker caption styling whenever it's empty.
+
+    `source`/`external_source_id` (content_sources/, additive) record where
+    the file came from: `"upload"` (the existing manual multipart upload,
+    `external_source_id` always NULL) or `"content_rewards"` (fetched via
+    `POST /source-videos/sync-content-rewards`, `external_source_id` is that
+    platform's own video/campaign id — the dedup key a re-sync uses so the
+    same remote video is never downloaded twice). Purely a provenance/dedup
+    concern: `transcribe_source_video`/`analyze_source_video`/`render_clip`
+    read only `storage_path` and never look at either of these two columns.
     """
 
     __tablename__ = "source_videos"
+    __table_args__ = (UniqueConstraint("source", "external_source_id", name="uq_source_videos_source_external_id"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     campaign_id: Mapped[int | None] = mapped_column(ForeignKey("campaigns.id"), nullable=True, index=True)
@@ -45,6 +55,10 @@ class SourceVideo(TimestampMixin, Base):
     title: Mapped[str] = mapped_column(String(300))
     storage_path: Mapped[str] = mapped_column(String(500))
     duration_s: Mapped[float | None] = mapped_column(Float, nullable=True)
+    source: Mapped[SourceVideoOrigin] = mapped_column(
+        Enum(SourceVideoOrigin, native_enum=False, length=32), default=SourceVideoOrigin.UPLOAD
+    )
+    external_source_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
 
     transcription_status: Mapped[ProcessingStatus] = mapped_column(
         Enum(ProcessingStatus, native_enum=False, length=32), default=ProcessingStatus.PENDING

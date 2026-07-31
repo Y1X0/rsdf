@@ -19,6 +19,16 @@ def test_upload_source_video_creates_row_and_stores_file(client):
     assert body["analysis_status"] == "pending"
 
 
+def test_upload_source_video_still_defaults_to_upload_source(client):
+    """Regression test for the Content Rewards Connector's Milestone 1 DB
+    change (source_videos.source/external_source_id): the existing manual
+    upload path must be completely unaffected."""
+    resp = _upload_source_video(client)
+    body = resp.json()
+    assert body["source"] == "upload"
+    assert body["external_source_id"] is None
+
+
 def test_list_and_get_source_video(client):
     created = _upload_source_video(client).json()
 
@@ -207,4 +217,80 @@ def test_render_clip_rejects_a_second_render_without_matching_idempotency_key(cl
 
 def test_source_video_endpoints_require_authentication(unauthenticated_client):
     resp = unauthenticated_client.get("/source-videos")
+    assert resp.status_code == 401
+
+
+class _FakeContentSourceProvider:
+    """Test double standing in for the real content_sources provider — two
+    videos so the sync endpoint's per-video idempotency/loop logic is
+    actually exercised, not just a single-item happy path."""
+
+    def __init__(self):
+        self.download_calls = []
+
+    def list_available_videos(self):
+        from content_factory.content_sources.base import RemoteCampaignVideo
+
+        return [
+            RemoteCampaignVideo(
+                external_id="ext-1", title="Fake Video 1", campaign_name="fake-campaign",
+                duration_s=5.0, download_url="", source_page_url="https://example.test/1",
+            ),
+            RemoteCampaignVideo(
+                external_id="ext-2", title="Fake Video 2", campaign_name="fake-campaign",
+                duration_s=5.0, download_url="", source_page_url="https://example.test/2",
+            ),
+        ]
+
+    def download_video(self, video, destination_path):
+        self.download_calls.append(video.external_id)
+        with open(destination_path, "wb") as f:
+            f.write(b"fake downloaded bytes")
+
+
+def test_sync_content_rewards_registers_videos_from_fake_provider(client):
+    from content_factory.api import deps
+    from content_factory.api.main import app
+
+    fake_provider = _FakeContentSourceProvider()
+    app.dependency_overrides[deps.get_content_source_provider] = lambda: fake_provider
+    try:
+        resp = client.post("/source-videos/sync-content-rewards")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert len(body["results"]) == 2
+        assert {r["external_id"] for r in body["results"]} == {"ext-1", "ext-2"}
+        assert all(r["created"] for r in body["results"])
+        assert sorted(fake_provider.download_calls) == ["ext-1", "ext-2"]
+
+        first_video_id = body["results"][0]["source_video_id"]
+        get_resp = client.get(f"/source-videos/{first_video_id}")
+        assert get_resp.json()["source"] == "content_rewards"
+        assert get_resp.json()["external_source_id"] == "ext-1"
+    finally:
+        del app.dependency_overrides[deps.get_content_source_provider]
+
+
+def test_sync_content_rewards_is_idempotent_on_rerun(client):
+    from content_factory.api import deps
+    from content_factory.api.main import app
+
+    fake_provider = _FakeContentSourceProvider()
+    app.dependency_overrides[deps.get_content_source_provider] = lambda: fake_provider
+    try:
+        first = client.post("/source-videos/sync-content-rewards").json()
+        second = client.post("/source-videos/sync-content-rewards").json()
+
+        assert {r["source_video_id"] for r in first["results"]} == {
+            r["source_video_id"] for r in second["results"]
+        }
+        assert all(not r["created"] for r in second["results"])
+        # Only downloaded once each - the second sync must not re-fetch.
+        assert sorted(fake_provider.download_calls) == ["ext-1", "ext-2"]
+    finally:
+        del app.dependency_overrides[deps.get_content_source_provider]
+
+
+def test_sync_content_rewards_requires_authentication(unauthenticated_client):
+    resp = unauthenticated_client.post("/source-videos/sync-content-rewards")
     assert resp.status_code == 401

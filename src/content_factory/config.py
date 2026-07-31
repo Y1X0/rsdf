@@ -63,6 +63,14 @@ class Settings(BaseSettings):
     diarization_provider: str = "null"  # "pyannote" | "null"
     huggingface_token: str = ""
 
+    # --- Content Rewards connector (content_sources/) ---
+    # "manual" (default): no external video source, sourcing stays exactly
+    # as manual as it is today (POST /source-videos upload). "content_rewards"
+    # selects ContentRewardsProvider - currently a placeholder returning
+    # synthetic test videos (Milestone 1); real contentrewards.com requests
+    # are wired in a later milestone once captured from the browser.
+    content_source_provider: str = "manual"  # "content_rewards" | "manual"
+
     # --- Auth (v1.1, PHASE1_AUDIT.md F2) ---
     # No user database in Phase 1 — a small, fixed set of pre-shared service
     # credentials is issued JWTs, matching the actual single-operator usage
@@ -196,6 +204,14 @@ class Settings(BaseSettings):
         if self.diarization_provider == "pyannote" and not self.huggingface_token:
             return "null"
         return self.diarization_provider
+
+    def resolved_content_source_provider(self) -> str:
+        """No credential-based fallback yet (Milestone 1's ContentRewardsProvider
+        is a placeholder needing no real secret) - kept as a resolved_*
+        method regardless, matching every other provider toggle's shape, so
+        a later milestone's real credential check slots in here without
+        callers changing."""
+        return self.content_source_provider
 
     def resolved_notification_provider(self) -> str:
         if self.notification_provider == "slack" and not self.slack_webhook_url:
