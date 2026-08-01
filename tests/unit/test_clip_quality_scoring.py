@@ -102,3 +102,58 @@ def test_score_clip_video_persists_a_real_row_queryable_by_video_id(db_session):
 
     row = db_session.query(ClipQualityScore).filter(ClipQualityScore.video_id == video.id).one()
     assert row.model_version == "heuristic-v1"
+
+
+def test_score_clip_video_scoring_a_second_time_updates_the_same_row_not_a_duplicate(db_session):
+    """Regression test: re-scoring the same video (a future recompute/
+    backfill, or any caller invoking this twice) must update the one
+    existing row in place - never crash on the video_id unique constraint
+    and never create a second row. This is the table meant to become the
+    foundation for future ranking/analytics, so exactly-one-row-per-video
+    must hold even under a second call, not just under normal single-call
+    usage."""
+    clip, video = _make_clip_and_video(db_session, hook_strength_score=50.0)
+
+    clip_quality_scoring.score_clip_video(
+        db_session, video=video, clip=clip, words=[], scene_changes=[],
+        render_start_s=2.0, render_end_s=9.0,
+    )
+    assert db_session.query(ClipQualityScore).filter(ClipQualityScore.video_id == video.id).count() == 1
+
+    # Simulate the clip's hook score having been recomputed/updated since
+    # the first scoring pass.
+    clip.hook_strength_score = 91.0
+    clip_quality_scoring.score_clip_video(
+        db_session, video=video, clip=clip, words=[], scene_changes=[],
+        render_start_s=2.0, render_end_s=9.0,
+    )
+
+    rows = db_session.query(ClipQualityScore).filter(ClipQualityScore.video_id == video.id).all()
+    assert len(rows) == 1
+    assert rows[0].hook_strength_score == 91.0
+
+
+def test_score_clip_video_never_clobbers_a_later_phases_real_signal_on_rescoring(db_session):
+    """retention_prediction_score/cta_quality_score/speech_clarity_score
+    stay None only until some future phase populates one with a real
+    value (a plain UPDATE against this same row) - re-running
+    score_clip_video afterward (e.g. to refresh hook_strength/caption/
+    scene signals) must never silently wipe that real value back to
+    None."""
+    clip, video = _make_clip_and_video(db_session)
+
+    clip_quality_scoring.score_clip_video(
+        db_session, video=video, clip=clip, words=[], scene_changes=[],
+        render_start_s=2.0, render_end_s=9.0,
+    )
+    row = db_session.query(ClipQualityScore).filter(ClipQualityScore.video_id == video.id).one()
+    row.retention_prediction_score = 77.0  # a hypothetical future phase populating a real value
+    db_session.flush()
+
+    clip_quality_scoring.score_clip_video(
+        db_session, video=video, clip=clip, words=[], scene_changes=[],
+        render_start_s=2.0, render_end_s=9.0,
+    )
+
+    db_session.refresh(row)
+    assert row.retention_prediction_score == 77.0

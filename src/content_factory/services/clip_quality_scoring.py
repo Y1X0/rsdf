@@ -82,18 +82,35 @@ def score_clip_video(
     render_start_s: float,
     render_end_s: float,
 ) -> ClipQualityScore:
-    quality = ClipQualityScore(
-        video_id=video.id,
-        hook_strength_score=clip.hook_strength_score,
-        caption_coverage_score=score_caption_coverage(words, start_s=render_start_s, end_s=render_end_s),
-        scene_alignment_score=score_scene_alignment(scene_changes, start_s=render_start_s, end_s=render_end_s),
-        retention_prediction_score=None,
-        cta_quality_score=None,
-        speech_clarity_score=None,
-        model_version="heuristic-v1",
-        computed_at=datetime.now(UTC),
-    )
-    db.add(quality)
+    """Upsert, not insert-only: there is always exactly one
+    ClipQualityScore per video. Re-scoring an already-scored video (a
+    future recompute/backfill run, or any caller that ends up invoking
+    this more than once for the same video) updates the one existing row
+    in place rather than crashing on clip_quality_scores.video_id's
+    unique constraint or creating a duplicate.
+
+    retention_prediction_score/cta_quality_score/speech_clarity_score are
+    only ever initialized to None on first creation, never reset on a
+    later call - once a future phase populates one of them with a real
+    value (a plain UPDATE against this same row - no migration needed,
+    the columns already exist), re-running this function must never
+    silently wipe it back out.
+    """
+    quality = db.query(ClipQualityScore).filter(ClipQualityScore.video_id == video.id).one_or_none()
+    if quality is None:
+        quality = ClipQualityScore(
+            video_id=video.id,
+            retention_prediction_score=None,
+            cta_quality_score=None,
+            speech_clarity_score=None,
+        )
+        db.add(quality)
+
+    quality.hook_strength_score = clip.hook_strength_score
+    quality.caption_coverage_score = score_caption_coverage(words, start_s=render_start_s, end_s=render_end_s)
+    quality.scene_alignment_score = score_scene_alignment(scene_changes, start_s=render_start_s, end_s=render_end_s)
+    quality.model_version = "heuristic-v1"
+    quality.computed_at = datetime.now(UTC)
     db.flush()
 
     logger.info(

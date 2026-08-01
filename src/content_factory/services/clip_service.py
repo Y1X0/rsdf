@@ -360,25 +360,6 @@ def render_clip(
         video.qc_notes = qc_notes
         db.flush()
 
-        # Independent of structural QC pass/fail above - a clip that fails
-        # duration QC still gets a real quality score, since a reviewer
-        # benefits from both signals regardless of each other. Scene
-        # changes are re-detected here rather than persisted from the
-        # earlier analyze step: best-effort and cheap (decode-only, no
-        # encoding - see scene_detection.py's own docstring), and avoids a
-        # schema change just to carry a list of floats between pipeline
-        # stages.
-        scene_changes = detect_scene_changes(source_video.storage_path)
-        clip_quality_scoring.score_clip_video(
-            db,
-            video=video,
-            clip=clip,
-            words=words,
-            scene_changes=scene_changes,
-            render_start_s=render_start_s,
-            render_end_s=render_end_s,
-        )
-
         clip.status = ClipStatus.RENDERED
         db.flush()
 
@@ -398,5 +379,40 @@ def render_clip(
         db.commit()
         log.error("clip_render_failed", exc_info=True)
         raise
+
+    # Quality scoring is genuinely optional and best-effort, deliberately
+    # outside the try/except above: the render itself already succeeded
+    # by this point, so a scoring failure (a bug in the heuristics, or -
+    # in principle - a DB error) must never be reported as a render
+    # failure, and must never flip an otherwise-successful video to
+    # RENDER_FAILED - same treatment transcribe_source_video already
+    # gives diarization. Scene changes are re-detected here rather than
+    # persisted from the earlier analyze step (avoids a schema change to
+    # carry a list of floats between pipeline stages); real measured cost
+    # is on the order of 15ms per second of source video (a full
+    # decode-only pass), so this is repeated once per clip rendered from
+    # the same source video - acceptable for this first milestone, but a
+    # real, non-zero cost worth knowing about if a source video ever
+    # yields many clips.
+    scene_changes = detect_scene_changes(source_video.storage_path)
+    try:
+        # A SAVEPOINT (not the outer transaction): if scoring fails
+        # mid-flush, only its own change is undone - a plain
+        # db.rollback() here would also wipe out the render success
+        # already committed... except this runs before the request-level
+        # commit (see api/deps.py::get_db), so begin_nested() protects the
+        # in-flight render state flushed above from being rolled back too.
+        with db.begin_nested():
+            clip_quality_scoring.score_clip_video(
+                db,
+                video=video,
+                clip=clip,
+                words=words,
+                scene_changes=scene_changes,
+                render_start_s=render_start_s,
+                render_end_s=render_end_s,
+            )
+    except Exception:
+        log.warning("clip_quality_scoring_failed", exc_info=True)
 
     return video

@@ -377,6 +377,40 @@ def test_render_clip_creates_a_clip_quality_score_row(db_session, tmp_media_dir)
     assert quality.speech_clarity_score is None
 
 
+def test_render_clip_survives_a_quality_scoring_failure_without_losing_the_render(db_session, tmp_media_dir, monkeypatch):
+    """Real bug found via review: quality scoring originally ran inside
+    render_clip's main try/except, so a bug in the (independent,
+    best-effort) scoring heuristics would flip an otherwise-successful
+    render to RENDER_FAILED and commit that. A scoring failure must never
+    be reported as a render failure - same "optional, never blocks the
+    pipeline" treatment transcribe_source_video already gives diarization
+    failures."""
+    from content_factory.db.models.clip import Clip
+
+    source_video = clip_service.register_source_video(
+        db_session, campaign_id=None, title="My Video", storage_path="/tmp/x.mp4"
+    )
+    source_video.transcript_segments = [{"start": 0.0, "end": 10.0, "text": "hello"}]
+    db_session.flush()
+
+    clip = Clip(source_video_id=source_video.id, start_s=1.0, end_s=6.0, hook_text="hook", status=ClipStatus.SUGGESTED)
+    db_session.add(clip)
+    db_session.flush()
+
+    def _boom(db, **kwargs):
+        raise RuntimeError("scoring heuristic exploded")
+
+    monkeypatch.setattr(clip_service.clip_quality_scoring, "score_clip_video", _boom)
+
+    renderer = NullClipRenderer(storage_dir=tmp_media_dir / "clips")
+    video = clip_service.render_clip(db_session, clip=clip, source_video=source_video, clip_renderer=renderer)
+
+    assert video.render_status == ProcessingStatus.COMPLETED
+    assert video.status == VideoStatus.PENDING_REVIEW
+    assert video.qc_status == "passed"
+    assert clip.status == ClipStatus.RENDERED
+
+
 def test_render_clip_refuses_to_render_an_already_rendered_clip_again(db_session, tmp_media_dir):
     """Real bug found via a live end-to-end run: the renderer names its
     output file from clip.id alone (clip_{id}.mp4), not video.id - calling
