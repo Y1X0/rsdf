@@ -48,7 +48,33 @@ services:
     branch: claude/ai-automation-architecture-lsddgf
     healthCheckPath: /health
     preDeployCommand: "alembic upgrade head"
+    # Real production gap this closes: without a Disk, this service's
+    # local filesystem is ephemeral - every redeploy/restart gets a brand
+    # new container with an empty filesystem, silently wiping any raw
+    # source video already downloaded (via upload or the Content Rewards
+    # connector) before it ever reaches transcribe/analyze/render. This
+    # was hit for real: 3 videos ingested via sync-content-rewards.yml
+    # all failed transcription with FileNotFoundError minutes later,
+    # right after a routine PR merge triggered a redeploy. The rendered
+    # *output* clips already survive this via MEDIA_BACKUP_* (S3/Supabase)
+    # above - raw source videos had no equivalent. MEDIA_STORAGE_DIR below
+    # points at this disk's mount path so every write under it persists
+    # across restarts/redeploys.
+    #
+    # IMPORTANT (could not be verified in this sandbox - render.com egress
+    # is blocked here, same caveat as the rest of this file): Render Disks
+    # require a paid instance type - the free instance plan does not
+    # support attaching a Disk at all. If this service is still on Free,
+    # applying this Blueprint will surface that as a real error from
+    # Render itself; upgrading the instance type is a cost decision only
+    # you can make, not something to route around.
+    disk:
+      name: content-factory-media
+      mountPath: /var/media
+      sizeGB: 10
     envVars:
+      - key: MEDIA_STORAGE_DIR
+        value: "/var/media"
       - key: ENVIRONMENT
         value: "production"
       - key: DATABASE_URL
