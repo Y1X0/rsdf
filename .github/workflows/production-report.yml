@@ -30,6 +30,13 @@ on:
         required: true
         default: "pilot-operator"
 
+# Least privilege: this workflow only ever reads (curl GETs against the
+# live deployment) and never pushes, comments, or otherwise writes back
+# to this repository - GITHUB_TOKEN needs nothing beyond checking out
+# the repo's own contents.
+permissions:
+  contents: read
+
 jobs:
   report:
     name: Count real production rows via existing read-only GET endpoints
@@ -139,6 +146,16 @@ jobs:
               "hook_library_entry_count_is_exact": hook_count_is_exact,
               "clip_quality_score_count": clip_quality_score_count,
           }
+
+          hook_label = str(hook_library_entry_count) + ("" if hook_count_is_exact else "+")
+          print("Source Videos:", len(source_video_ids))
+          print("Clips:", clip_count)
+          print("Rendered:", rendered_clip_count)
+          print("Published:", published_video_count)
+          print("HookLibrary:", hook_label)
+          print("Quality Scores:", clip_quality_score_count)
+
+          print()
           print(json.dumps(report, indent=2))
           if not hook_count_is_exact:
               print(
