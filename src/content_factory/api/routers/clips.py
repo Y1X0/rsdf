@@ -170,7 +170,7 @@ def sync_content_rewards(
                 )
                 .one_or_none()
             )
-            if source_video is not None and source_video.storage_path:
+            if source_video is not None and source_video.storage_path and Path(source_video.storage_path).exists():
                 logger.info(
                     "content_rewards_video_already_synced",
                     source_video_id=source_video.id,
@@ -213,6 +213,38 @@ def sync_content_rewards(
             db.flush()
             logger.info("content_rewards_video_fetched", source_video_id=source_video.id)
             return source_video
+
+        # Real production bug this closes: this service's local disk is
+        # ephemeral on the current hosting plan - a redeploy/restart wipes
+        # every downloaded file, but the DB row and its IdempotencyRecord
+        # both still say COMPLETED. run_idempotent's own COMPLETED check
+        # would otherwise replay that stale success forever without ever
+        # calling _work() again to notice the file is gone. Checking file
+        # existence here, before run_idempotent runs, and invalidating the
+        # stale COMPLETED record when it's missing forces the upcoming
+        # run_idempotent call onto its existing, already-tested "FAILED ->
+        # retry" path - which lands back in _work() above, which reuses
+        # this exact row (same id, same external_source_id) and resumes
+        # the download rather than creating a duplicate.
+        existing_source_video = (
+            db.query(SourceVideo)
+            .filter(
+                SourceVideo.source == SourceVideoOrigin.CONTENT_REWARDS,
+                SourceVideo.external_source_id == remote_video.external_id,
+            )
+            .one_or_none()
+        )
+        if (
+            existing_source_video is not None
+            and existing_source_video.storage_path
+            and not Path(existing_source_video.storage_path).exists()
+        ):
+            idempotency.invalidate_completed_record(
+                db,
+                scope="source_video.fetch_external",
+                key=remote_video.external_id,
+                reason=f"source video file missing from local storage: {existing_source_video.storage_path}",
+            )
 
         source_video, created = idempotency.run_idempotent(
             db,

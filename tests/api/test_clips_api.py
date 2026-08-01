@@ -1,4 +1,5 @@
 import io
+import os
 
 
 def _upload_source_video(client, *, title="My Long Video"):
@@ -349,22 +350,25 @@ def test_sync_content_rewards_resumes_a_row_left_over_from_a_previous_partial_fa
         db.close()
 
 
-def test_sync_content_rewards_does_not_redownload_an_already_synced_video(client):
-    """A SourceVideo row that already has a real storage_path (fully synced
-    by some earlier run) must never be re-downloaded, even without a
-    matching IdempotencyRecord to short-circuit on - the DB-level check
-    added for the regression above must also skip an already-complete row,
-    not just an orphaned/incomplete one."""
+def test_sync_content_rewards_does_not_redownload_an_already_synced_video(client, tmp_path):
+    """A SourceVideo row whose storage_path points at a real, still-present
+    file (fully synced by some earlier run) must never be re-downloaded,
+    even without a matching IdempotencyRecord to short-circuit on - the
+    DB-level check added for the regression above must also skip an
+    already-complete row, not just an orphaned/incomplete one."""
     from content_factory.api import deps
     from content_factory.api.main import app
     from content_factory.db.models.enums import SourceVideoOrigin
     from content_factory.db.models.source_video import SourceVideo
 
+    real_file = tmp_path / "already_on_disk.mp4"
+    real_file.write_bytes(b"real bytes already on disk")
+
     db = client.db_session_factory()
     try:
         already_synced = SourceVideo(
             title="Fake Video 1", source=SourceVideoOrigin.CONTENT_REWARDS,
-            external_source_id="ext-1", storage_path="/already/on/disk.mp4",
+            external_source_id="ext-1", storage_path=str(real_file),
         )
         db.add(already_synced)
         db.commit()
@@ -384,3 +388,71 @@ def test_sync_content_rewards_does_not_redownload_an_already_synced_video(client
     ext1 = next(r for r in body["results"] if r["external_id"] == "ext-1")
     assert ext1["source_video_id"] == already_synced_id
     assert "ext-1" not in fake_provider.download_calls
+    assert real_file.read_bytes() == b"real bytes already on disk"
+
+
+def test_sync_content_rewards_redownloads_when_the_synced_file_is_missing_from_disk(client, tmp_path):
+    """Real production incident: a service with no persistent disk (the
+    free-tier hosting plan) had 3 real videos downloaded successfully, then
+    lost all 3 files to a routine redeploy's fresh, empty filesystem -
+    while the database still recorded storage_path set and the
+    IdempotencyRecord still said COMPLETED. Re-running the sync then
+    returned created=false for all three without ever re-checking whether
+    the file actually existed, so transcription failed with
+    FileNotFoundError. The sync must detect the missing file and redo the
+    download into the exact same row - never creating a second SourceVideo
+    for the same external_source_id."""
+    from content_factory.api import deps
+    from content_factory.api.main import app
+    from content_factory.db.models.enums import ProcessingStatus, SourceVideoOrigin
+    from content_factory.db.models.idempotency import IdempotencyRecord
+    from content_factory.db.models.source_video import SourceVideo
+    from content_factory.services.idempotency import compute_fingerprint
+
+    vanished_path = str(tmp_path / "vanished_after_redeploy.mp4")  # never created - simulates the wipe
+
+    db = client.db_session_factory()
+    try:
+        previously_synced = SourceVideo(
+            title="Fake Video 1", source=SourceVideoOrigin.CONTENT_REWARDS,
+            external_source_id="ext-1", storage_path=vanished_path,
+        )
+        db.add(previously_synced)
+        db.flush()
+        db.add(
+            IdempotencyRecord(
+                scope="source_video.fetch_external",
+                key="ext-1",
+                request_fingerprint=compute_fingerprint({"external_id": "ext-1", "source": "content_rewards"}),
+                status=ProcessingStatus.COMPLETED,
+                result_entity_type="source_video",
+                result_entity_id=previously_synced.id,
+            )
+        )
+        db.commit()
+        previously_synced_id = previously_synced.id
+    finally:
+        db.close()
+
+    fake_provider = _FakeContentSourceProvider()
+    app.dependency_overrides[deps.get_content_source_provider] = lambda: fake_provider
+    try:
+        resp = client.post("/source-videos/sync-content-rewards")
+    finally:
+        del app.dependency_overrides[deps.get_content_source_provider]
+
+    assert resp.status_code == 200
+    body = resp.json()
+    ext1 = next(r for r in body["results"] if r["external_id"] == "ext-1")
+    # Reused the same row - never a second, duplicate SourceVideo for ext-1.
+    assert ext1["source_video_id"] == previously_synced_id
+    # Actually re-downloaded, since the file was gone.
+    assert "ext-1" in fake_provider.download_calls
+
+    db = client.db_session_factory()
+    try:
+        refreshed = db.get(SourceVideo, previously_synced_id)
+        assert refreshed.storage_path != vanished_path
+        assert os.path.exists(refreshed.storage_path)
+    finally:
+        db.close()

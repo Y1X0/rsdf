@@ -106,6 +106,30 @@ def _get_or_create_record(
         return existing, False
 
 
+def invalidate_completed_record(db: Session, *, scope: str, key: str, reason: str) -> None:
+    """Forces a COMPLETED record back to FAILED so the next run_idempotent
+    call for the same (scope, key) takes its existing, already-tested
+    "FAILED -> allow retry" path instead of replaying the stale result.
+
+    Real gap this closes: run_idempotent's own COMPLETED check assumes a
+    completed entity stays valid forever - true for most callers, but not
+    when the entity's completion depended on an external side effect (a
+    file written to local disk) that can vanish later (e.g. a Render
+    redeploy wipes ephemeral storage) without the database ever knowing.
+    Callers that need to re-verify a completed result before trusting it
+    (see api/routers/clips.py's sync_content_rewards) call this first, on
+    exactly the (scope, key) they've independently determined is stale -
+    every other run_idempotent caller is unaffected, since this is never
+    called automatically."""
+    record = _query_record(db, scope=scope, key=key)
+    if record is None or record.status != ProcessingStatus.COMPLETED:
+        return
+    record.status = ProcessingStatus.FAILED
+    record.error_message = reason
+    db.commit()
+    logger.warning("idempotent_completed_record_invalidated", scope=scope, key=key, reason=reason)
+
+
 def run_idempotent(
     db: Session,
     *,
