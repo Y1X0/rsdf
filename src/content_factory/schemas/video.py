@@ -21,6 +21,19 @@ class QualityScoreOut(BaseModel):
     computed_at: datetime
 
 
+class ClipQualityScoreOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    hook_strength_score: float | None
+    caption_coverage_score: float | None
+    scene_alignment_score: float | None
+    retention_prediction_score: float | None
+    cta_quality_score: float | None
+    speech_clarity_score: float | None
+    model_version: str
+    computed_at: datetime
+
+
 class VideoOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -41,3 +54,4 @@ class VideoOut(BaseModel):
     qc_notes: str | None = None
     created_at: datetime
     quality_score: QualityScoreOut | None = None
+    clip_quality_score: ClipQualityScoreOut | None = None
