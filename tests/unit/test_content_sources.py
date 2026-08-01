@@ -217,6 +217,23 @@ def _mock_folder_listing(monkeypatch, files: list[dict]) -> None:
     monkeypatch.setattr(httpx, "get", lambda *a, **k: _FakeResponse(200, json_body={"files": files}))
 
 
+def _mock_drive_tree(monkeypatch, tree: dict[str, list[dict]]) -> None:
+    """Stands in for a real Google Drive folder tree: `tree` maps a
+    folder id to the files/subfolders directly inside it, and the fake
+    `httpx.get` picks the right list by reading the folder id back out of
+    the real query string this provider sends (`'{folder_id}' in
+    parents`), the same way the real Drive API would scope its response to
+    whichever folder was actually asked for."""
+    import re as _re
+
+    def _fake_get(*args, **kwargs):
+        query = kwargs["params"]["q"]
+        folder_id = _re.search(r"'([\w-]+)' in parents", query).group(1)
+        return _FakeResponse(200, json_body={"files": tree.get(folder_id, [])})
+
+    monkeypatch.setattr(httpx, "get", _fake_get)
+
+
 def test_content_rewards_provider_downloads_the_first_video_file_in_the_folder(monkeypatch, tmp_path):
     _mock_folder_listing(monkeypatch, [{"id": "file-1", "name": "raw.mp4", "mimeType": "video/mp4"}])
     monkeypatch.setattr(
@@ -238,6 +255,83 @@ def test_content_rewards_provider_download_raises_when_folder_has_no_videos(monk
     provider = ContentRewardsProvider(google_drive_api_key="test-key")
     with pytest.raises(ProviderRequestRejected):
         provider.download_video(_video_with_drive_folder(), "/tmp/whatever.mp4")
+
+
+def test_content_rewards_provider_download_raises_when_folder_has_only_non_video_files(monkeypatch):
+    _mock_folder_listing(
+        monkeypatch,
+        [
+            {"id": "file-1", "name": "notes.pdf", "mimeType": "application/pdf"},
+            {"id": "file-2", "name": "cover.jpg", "mimeType": "image/jpeg"},
+        ],
+    )
+
+    provider = ContentRewardsProvider(google_drive_api_key="test-key")
+    with pytest.raises(ProviderRequestRejected, match="No video files found"):
+        provider.download_video(_video_with_drive_folder(), "/tmp/whatever.mp4")
+
+
+def test_content_rewards_provider_download_finds_a_video_inside_a_subfolder(monkeypatch, tmp_path):
+    """Regression for the real production incident: a Content Rewards
+    campaign's shared Drive folder had no video files at its top level,
+    only a per-creator subfolder - the original flat-only listing reported
+    "no videos found" even though real footage existed one level down."""
+    _mock_drive_tree(
+        monkeypatch,
+        {
+            "abc123XYZ": [{"id": "sub-1", "name": "Creator A", "mimeType": "application/vnd.google-apps.folder"}],
+            "sub-1": [{"id": "file-1", "name": "raw.mp4", "mimeType": "video/mp4"}],
+        },
+    )
+    monkeypatch.setattr(
+        httpx, "stream",
+        lambda method, url, **k: _FakeStreamResponse(200, chunks=[b"fake ", b"mp4 bytes"]),
+    )
+
+    provider = ContentRewardsProvider(google_drive_api_key="test-key")
+    dest = tmp_path / "out.mp4"
+
+    provider.download_video(_video_with_drive_folder(), str(dest))
+
+    assert dest.read_bytes() == b"fake mp4 bytes"
+
+
+def test_content_rewards_provider_download_raises_a_distinct_error_when_only_nested_folders_are_found(monkeypatch):
+    """A folder containing only subfolders (with no video anywhere in the
+    tree) must be reported differently than a genuinely empty folder, so
+    an operator reading the error can tell the two situations apart."""
+    _mock_drive_tree(
+        monkeypatch,
+        {
+            "abc123XYZ": [{"id": "sub-1", "name": "Empty subfolder", "mimeType": "application/vnd.google-apps.folder"}],
+            "sub-1": [],
+        },
+    )
+
+    provider = ContentRewardsProvider(google_drive_api_key="test-key")
+    with pytest.raises(ProviderRequestRejected, match="only nested subfolders were found"):
+        provider.download_video(_video_with_drive_folder(), "/tmp/whatever.mp4")
+
+
+def test_content_rewards_provider_download_recognizes_video_files_with_a_generic_mime_type(monkeypatch, tmp_path):
+    """Google Drive doesn't always report a 'video/*' mimeType for every
+    real video upload (e.g. some .mkv files come back as
+    'application/octet-stream') - the filename extension must still be
+    recognized as a fallback."""
+    _mock_folder_listing(
+        monkeypatch, [{"id": "file-1", "name": "raw_footage.mkv", "mimeType": "application/octet-stream"}]
+    )
+    monkeypatch.setattr(
+        httpx, "stream",
+        lambda method, url, **k: _FakeStreamResponse(200, chunks=[b"fake mkv bytes"]),
+    )
+
+    provider = ContentRewardsProvider(google_drive_api_key="test-key")
+    dest = tmp_path / "out.mkv"
+
+    provider.download_video(_video_with_drive_folder(), str(dest))
+
+    assert dest.read_bytes() == b"fake mkv bytes"
 
 
 def test_content_rewards_provider_download_rejects_when_content_length_exceeds_limit(monkeypatch, tmp_path):
