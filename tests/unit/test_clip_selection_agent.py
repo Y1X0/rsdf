@@ -4,6 +4,7 @@ import pytest
 
 from content_factory.agents.clip_selection_agent import ClipSelectionAgent
 from content_factory.db.models.enums import ClipStatus
+from content_factory.db.models.hook import HookLibrary
 from content_factory.db.models.source_video import SourceVideo
 from content_factory.llm.providers.fake_provider import FakeLLMClient
 from content_factory.transcription.base import TranscriptSegment
@@ -143,10 +144,53 @@ def test_select_clips_discards_an_unrecognized_hook_framework(db_session):
 def test_prompt_includes_the_full_hook_framework_taxonomy():
     from content_factory.services.hook_scoring import HOOK_FRAMEWORKS
 
-    prompt = ClipSelectionAgent._build_prompt(segments=_segments(), max_clips=5)
+    prompt = ClipSelectionAgent._build_prompt(segments=_segments(), max_clips=5, retrieved_hooks=[])
 
     for key in HOOK_FRAMEWORKS:
         assert key in prompt
+
+
+def test_prompt_includes_real_retrieved_hooks_not_a_static_list():
+    retrieved_hooks = [
+        HookLibrary(hook_text="The one mistake that's costing you followers", hook_type="curiosity_gap", best_viral_score=0.95),
+        HookLibrary(hook_text="Stop scrolling - this changes everything", hook_type="pattern_interrupt", best_viral_score=0.8),
+    ]
+
+    prompt = ClipSelectionAgent._build_prompt(segments=_segments(), max_clips=5, retrieved_hooks=retrieved_hooks)
+
+    assert "Highest-performing hooks previously observed for this niche:" in prompt
+    assert "The one mistake that's costing you followers" in prompt
+    assert "Stop scrolling - this changes everything" in prompt
+
+
+def test_prompt_falls_back_to_no_prior_hook_data_yet_when_none_retrieved():
+    prompt = ClipSelectionAgent._build_prompt(segments=_segments(), max_clips=5, retrieved_hooks=[])
+
+    assert "(no prior hook data yet)" in prompt
+
+
+def test_select_clips_produces_identical_clips_whether_or_not_hooks_were_retrieved(db_session):
+    """Hook retrieval is additive prompt context only - it must never
+    change how a valid LLM response is parsed into Clip rows."""
+    canned = [{"start_s": 2.0, "end_s": 8.0, "hook_text": "hook", "predicted_score": 0.9, "reason": "n/a"}]
+    llm = FakeLLMClient(response_builder=lambda system, prompt: json.dumps(canned))
+    agent = ClipSelectionAgent(llm)
+
+    source_video_a = _source_video(db_session)
+    clips_without_hooks = agent.select_clips(
+        db_session, source_video=source_video_a, segments=_segments(), max_clips=5, retrieved_hooks=[]
+    )
+
+    source_video_b = _source_video(db_session)
+    retrieved_hooks = [HookLibrary(hook_text="prior hook", hook_type="bold_claim", best_viral_score=0.7)]
+    clips_with_hooks = agent.select_clips(
+        db_session, source_video=source_video_b, segments=_segments(), max_clips=5, retrieved_hooks=retrieved_hooks
+    )
+
+    assert len(clips_without_hooks) == len(clips_with_hooks) == 1
+    assert clips_without_hooks[0].start_s == clips_with_hooks[0].start_s
+    assert clips_without_hooks[0].end_s == clips_with_hooks[0].end_s
+    assert clips_without_hooks[0].hook_text == clips_with_hooks[0].hook_text
 
 
 def test_select_clips_marks_agent_run_failed_and_reraises_on_error(db_session):

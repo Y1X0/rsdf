@@ -338,7 +338,7 @@ def analyze_source_video(
     niche_id = _niche_id_for_campaign(db, source_video.campaign_id)
     enforce_budget(db, niche_id=niche_id, notification_provider=notification_provider)
     clips = clip_service.analyze_source_video(
-        db, source_video=source_video, llm_client=llm_client, max_clips=payload.max_clips
+        db, source_video=source_video, llm_client=llm_client, max_clips=payload.max_clips, niche_id=niche_id
     )
     # Same treatment as the Script pipeline's own hook tracking
     # (api/routers/content.py's _generate_scripts_for_idea): every hook a

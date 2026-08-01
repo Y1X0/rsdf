@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from content_factory.agents.base import agent_run, parse_json_response
 from content_factory.db.models.clip import Clip
 from content_factory.db.models.enums import ClipStatus
+from content_factory.db.models.hook import HookLibrary
 from content_factory.db.models.source_video import SourceVideo
 from content_factory.llm.base import LLMClient
 from content_factory.logging_config import get_logger
@@ -70,12 +71,19 @@ class ClipSelectionAgent:
         segments: list[TranscriptSegment],
         max_clips: int = 5,
         scene_changes: list[float] | None = None,
+        retrieved_hooks: list[HookLibrary] | None = None,
     ) -> list[Clip]:
         log = logger.bind(source_video_id=source_video.id)
-        log.info("clip_selection_agent_started", segment_count=len(segments), max_clips=max_clips)
+        retrieved_hooks = retrieved_hooks or []
+        log.info(
+            "clip_selection_agent_started",
+            segment_count=len(segments),
+            max_clips=max_clips,
+            retrieved_hook_count=len(retrieved_hooks),
+        )
         scene_changes = scene_changes or []
 
-        prompt = self._build_prompt(segments=segments, max_clips=max_clips)
+        prompt = self._build_prompt(segments=segments, max_clips=max_clips, retrieved_hooks=retrieved_hooks)
 
         try:
             with agent_run(
@@ -84,7 +92,11 @@ class ClipSelectionAgent:
                 scope="source_video.analyze",
                 entity_type="source_video",
                 entity_id=source_video.id,
-                input_summary={"segment_count": len(segments), "max_clips": max_clips},
+                input_summary={
+                    "segment_count": len(segments),
+                    "max_clips": max_clips,
+                    "retrieved_hook_count": len(retrieved_hooks),
+                },
             ) as handle:
                 response = self._llm.complete(system=_SYSTEM_PROMPT, prompt=prompt, max_tokens=2000)
                 handle.record_output(
@@ -154,11 +166,25 @@ class ClipSelectionAgent:
         return clips
 
     @staticmethod
-    def _build_prompt(*, segments: list[TranscriptSegment], max_clips: int) -> str:
+    def _build_prompt(
+        *, segments: list[TranscriptSegment], max_clips: int, retrieved_hooks: list[HookLibrary]
+    ) -> str:
         transcript_block = "\n".join(f"[{s.start_s:.1f}-{s.end_s:.1f}] {s.text}" for s in segments) or (
             "(empty transcript)"
         )
+        # Same retrieval-augmented shape as ScriptAgent._build_prompt's own
+        # "highest-performing hooks previously observed" block - previously
+        # ClipSelectionAgent only ever saw the static HOOK_FRAMEWORKS menu,
+        # never which frameworks/phrasings have actually earned a real
+        # viral score for this niche, even though clip hooks have written
+        # into that same HookLibrary all along (record_hook_usage/
+        # record_hook_outcome). HOOK_FRAMEWORKS remains the fallback menu
+        # either way - this block only adds real examples on top of it.
+        hooks_block = "\n".join(
+            f"- ({h.hook_type or 'unknown'}, score={h.best_viral_score}): {h.hook_text}" for h in retrieved_hooks
+        ) or "(no prior hook data yet)"
         return (
             f"Timestamped transcript:\n{transcript_block}\n\n"
+            f"Highest-performing hooks previously observed for this niche:\n{hooks_block}\n\n"
             f"{_RESPONSE_SCHEMA_HINT.format(max_clips=max_clips, hook_frameworks=format_hook_frameworks_for_prompt())}"
         )

@@ -27,6 +27,7 @@ from content_factory.db.models.video import Video
 from content_factory.diarization.base import SpeakerDiarizationProvider, SpeakerTurn
 from content_factory.llm.base import LLMClient
 from content_factory.logging_config import get_logger
+from content_factory.services import content_intelligence
 from content_factory.services.media_backup import (
     MediaBackupProvider,
     NullMediaBackupProvider,
@@ -152,7 +153,12 @@ def transcribe_source_video(
 
 
 def analyze_source_video(
-    db: Session, *, source_video: SourceVideo, llm_client: LLMClient, max_clips: int = 5
+    db: Session,
+    *,
+    source_video: SourceVideo,
+    llm_client: LLMClient,
+    max_clips: int = 5,
+    niche_id: int | None = None,
 ) -> list[Clip]:
     log = logger.bind(source_video_id=source_video.id)
     source_video.analysis_status = ProcessingStatus.IN_PROGRESS
@@ -164,11 +170,23 @@ def analyze_source_video(
     ]
 
     scene_changes = detect_scene_changes(source_video.storage_path)
+    # Same retrieval the Script pipeline already uses (api/routers/content.py's
+    # _generate_scripts_for_idea) - lets ClipSelectionAgent see which real,
+    # already-observed hooks/frameworks have actually earned a viral score
+    # for this niche, instead of only ever the static HOOK_FRAMEWORKS menu.
+    # A single call either way (get_top_hooks itself degrades to an empty
+    # list when the niche has no data yet) - no extra query added for that case.
+    retrieved_hooks = content_intelligence.get_top_hooks(db, niche_id=niche_id, limit=5)
 
     try:
         agent = ClipSelectionAgent(llm_client)
         clips = agent.select_clips(
-            db, source_video=source_video, segments=segments, max_clips=max_clips, scene_changes=scene_changes
+            db,
+            source_video=source_video,
+            segments=segments,
+            max_clips=max_clips,
+            scene_changes=scene_changes,
+            retrieved_hooks=retrieved_hooks,
         )
         # select_clips wraps its own agent_run internally (scope
         # "source_video.analyze"); link the most recent one here so

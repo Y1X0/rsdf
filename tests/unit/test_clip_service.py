@@ -4,12 +4,20 @@ from pathlib import Path
 import pytest
 
 from content_factory.db.models.enums import ClipStatus, ProcessingStatus, VideoStatus
+from content_factory.db.models.niche import Niche
 from content_factory.diarization.base import DiarizationResult, SpeakerTurn
 from content_factory.llm.providers.fake_provider import FakeLLMClient
-from content_factory.services import clip_service
+from content_factory.services import clip_service, content_intelligence
 from content_factory.transcription.base import TranscriptionResult, TranscriptSegment, TranscriptWord
 from content_factory.video_clipping.base import ClipRenderResult
 from content_factory.video_clipping.providers.null_clip_renderer import NullClipRenderer
+
+
+def _make_niche(db_session, name="finance") -> Niche:
+    niche = Niche(name=name)
+    db_session.add(niche)
+    db_session.flush()
+    return niche
 
 
 class _FakeTranscriptionProvider:
@@ -206,6 +214,101 @@ def test_analyze_source_video_creates_clips_from_transcript(db_session):
     assert len(clips) == 1
     assert source_video.analysis_status == ProcessingStatus.COMPLETED
     assert source_video.analysis_agent_run_id is not None
+
+
+def test_analyze_source_video_feeds_real_get_top_hooks_into_the_prompt_not_a_static_list(db_session):
+    """Regression test for a real gap found via code audit: get_top_hooks
+    (the retrieval that surfaces which real hooks/frameworks have actually
+    earned a viral score for this niche) was called for the Script
+    pipeline (api/routers/content.py) but never for ClipSelectionAgent -
+    every clip-selection LLM call only ever saw the static HOOK_FRAMEWORKS
+    menu, never a real, niche-specific example. This proves the prompt is
+    built from the real HookLibrary retrieval, not a hardcoded string."""
+    niche = _make_niche(db_session)
+    content_intelligence.record_hook_outcome(
+        db_session, niche_id=niche.id, hook_text="The one mistake that's costing you followers",
+        viral_score=0.95,
+    )
+
+    source_video = clip_service.register_source_video(
+        db_session, campaign_id=None, title="My Video", storage_path="/tmp/x.mp4"
+    )
+    source_video.transcript_segments = [{"start": 0.0, "end": 10.0, "text": "an interesting moment happens here"}]
+    db_session.flush()
+
+    captured_prompts = []
+
+    def _capture(system, prompt):
+        captured_prompts.append(prompt)
+        return json.dumps([{"start_s": 1.0, "end_s": 8.0, "hook_text": "hook", "predicted_score": 0.8, "reason": "why"}])
+
+    llm = FakeLLMClient(response_builder=_capture)
+
+    clip_service.analyze_source_video(
+        db_session, source_video=source_video, llm_client=llm, max_clips=5, niche_id=niche.id
+    )
+
+    assert len(captured_prompts) == 1
+    assert "Highest-performing hooks previously observed for this niche:" in captured_prompts[0]
+    assert "The one mistake that's costing you followers" in captured_prompts[0]
+
+
+def test_analyze_source_video_prompt_falls_back_cleanly_when_the_niche_has_no_hook_data_yet(db_session):
+    niche = _make_niche(db_session)
+    source_video = clip_service.register_source_video(
+        db_session, campaign_id=None, title="My Video", storage_path="/tmp/x.mp4"
+    )
+    source_video.transcript_segments = [{"start": 0.0, "end": 10.0, "text": "an interesting moment happens here"}]
+    db_session.flush()
+
+    captured_prompts = []
+
+    def _capture(system, prompt):
+        captured_prompts.append(prompt)
+        return json.dumps([{"start_s": 1.0, "end_s": 8.0, "hook_text": "hook", "predicted_score": 0.8, "reason": "why"}])
+
+    llm = FakeLLMClient(response_builder=_capture)
+
+    clips = clip_service.analyze_source_video(
+        db_session, source_video=source_video, llm_client=llm, max_clips=5, niche_id=niche.id
+    )
+
+    assert "(no prior hook data yet)" in captured_prompts[0]
+    # The rest of clip selection must work identically either way - hook
+    # retrieval is additive context, never a gate on the pipeline itself.
+    assert len(clips) == 1
+    assert source_video.analysis_status == ProcessingStatus.COMPLETED
+
+
+def test_analyze_source_video_calls_get_top_hooks_exactly_once_regardless_of_data(db_session, monkeypatch):
+    """No unnecessary extra query: whether or not the niche has any prior
+    hook data, get_top_hooks is called exactly once - no pre-check query
+    added on top of it."""
+    niche = _make_niche(db_session)
+    source_video = clip_service.register_source_video(
+        db_session, campaign_id=None, title="My Video", storage_path="/tmp/x.mp4"
+    )
+    source_video.transcript_segments = [{"start": 0.0, "end": 10.0, "text": "an interesting moment happens here"}]
+    db_session.flush()
+
+    call_count = 0
+    real_get_top_hooks = content_intelligence.get_top_hooks
+
+    def _counting_get_top_hooks(db, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        return real_get_top_hooks(db, **kwargs)
+
+    monkeypatch.setattr(clip_service.content_intelligence, "get_top_hooks", _counting_get_top_hooks)
+
+    canned = [{"start_s": 1.0, "end_s": 8.0, "hook_text": "hook", "predicted_score": 0.8, "reason": "why"}]
+    llm = FakeLLMClient(response_builder=lambda system, prompt: json.dumps(canned))
+
+    clip_service.analyze_source_video(
+        db_session, source_video=source_video, llm_client=llm, max_clips=5, niche_id=niche.id
+    )
+
+    assert call_count == 1
 
 
 def test_render_clip_creates_video_row_reusing_existing_pipeline_fields(db_session, tmp_media_dir):
