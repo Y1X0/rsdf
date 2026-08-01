@@ -41,7 +41,10 @@ import os
 import re
 
 from content_factory.content_sources.base import ContentSourceProvider, RemoteCampaignVideo
+from content_factory.logging_config import get_logger
 from content_factory.retry import ProviderRequestRejected, RetryableProviderError, describe_http_error
+
+logger = get_logger(__name__)
 
 _DEFAULT_MAX_VIDEO_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB — matches config.py's default
 
@@ -63,6 +66,33 @@ _BROWSER_USER_AGENT = (
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
 _CAMPAIGN_LIST_KEYS = ("bannerCampaigns", "featuredCampaigns", "featuredMixCampaigns")
+
+_DRIVE_FOLDER_MIME_TYPE = "application/vnd.google-apps.folder"
+# Google Drive's own mimeType detection isn't fully reliable for every
+# upload (some .mkv/.mov files come back as 'application/octet-stream'
+# rather than a 'video/*' type) - falling back to the filename's extension
+# catches those without guessing at every possible video mimeType Drive
+# might report.
+_VIDEO_FILE_EXTENSIONS = (".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v", ".mpeg", ".mpg")
+# Real Content Rewards campaigns commonly organize footage into per-creator
+# or per-week subfolders rather than dropping every file directly into the
+# shared folder - a real production run hit exactly this: the folder had
+# no video files at its top level, only subfolders, so the original
+# flat-only listing reported "no videos found" even though real footage
+# existed one level down. Bounded rather than unbounded to cap how many
+# Google Drive API calls a single sync can make against a pathologically
+# deep or wide folder tree.
+_MAX_DRIVE_FOLDER_RECURSION_DEPTH = 5
+
+
+def _is_video_file(file: dict) -> bool:
+    mime_type = file.get("mimeType") or ""
+    if mime_type.startswith("video/"):
+        return True
+    if mime_type == _DRIVE_FOLDER_MIME_TYPE:
+        return False
+    name = (file.get("name") or "").lower()
+    return name.endswith(_VIDEO_FILE_EXTENSIONS)
 
 
 class ContentRewardsProvider(ContentSourceProvider):
@@ -127,33 +157,15 @@ class ContentRewardsProvider(ContentSourceProvider):
             raise ProviderRequestRejected(f"Not a Google Drive folder URL: {video.download_url}")
         folder_id = folder_id_match.group(1)
 
-        try:
-            list_response = httpx.get(
-                "https://www.googleapis.com/drive/v3/files",
-                params={
-                    "q": f"'{folder_id}' in parents and mimeType contains 'video/'",
-                    "key": self._google_drive_api_key,
-                    "fields": "files(id,name,mimeType)",
-                },
-                timeout=30.0,
-            )
-        except httpx.TimeoutException as exc:
-            raise RetryableProviderError("Google Drive folder listing timed out") from exc
-
-        if list_response.status_code >= 500:
-            raise RetryableProviderError(
-                f"Google Drive folder listing returned {list_response.status_code}"
-            )
-        if list_response.status_code >= 400:
-            raise ProviderRequestRejected(
-                f"Google Drive folder listing returned {list_response.status_code}: "
-                f"{describe_http_error(list_response)}"
-            )
-
-        files = list_response.json().get("files", [])
-        if not files:
+        file_id, saw_subfolder = self._find_first_video_in_drive_folder(httpx, folder_id)
+        if file_id is None:
+            if saw_subfolder:
+                raise ProviderRequestRejected(
+                    f"No video files found in Google Drive folder {folder_id} or its subfolders "
+                    f"(searched up to {_MAX_DRIVE_FOLDER_RECURSION_DEPTH} levels deep) - only "
+                    f"nested subfolders were found"
+                )
             raise ProviderRequestRejected(f"No video files found in Google Drive folder {folder_id}")
-        file_id = files[0]["id"]
 
         # Streamed, not `httpx.get` + `.content`: a Google Drive folder is
         # external, uncontrolled content (unlike a manual upload through our
@@ -204,6 +216,63 @@ class ContentRewardsProvider(ContentSourceProvider):
                     ) from None
         except httpx.TimeoutException as exc:
             raise RetryableProviderError("Google Drive file download timed out") from exc
+
+    def _find_first_video_in_drive_folder(
+        self, httpx, folder_id: str, *, _depth: int = 0
+    ) -> tuple[str | None, bool]:
+        """Searches `folder_id` for a video file, recursing into subfolders
+        (see _MAX_DRIVE_FOLDER_RECURSION_DEPTH). Returns
+        (file_id_or_None, saw_a_subfolder_anywhere_in_the_search) - the
+        second value lets the caller report a clear "only nested folders
+        were found" error instead of a bare "no videos" that looks
+        identical to a genuinely empty folder."""
+        try:
+            response = httpx.get(
+                "https://www.googleapis.com/drive/v3/files",
+                params={
+                    "q": f"'{folder_id}' in parents and trashed=false",
+                    "key": self._google_drive_api_key,
+                    "fields": "files(id,name,mimeType)",
+                },
+                timeout=30.0,
+            )
+        except httpx.TimeoutException as exc:
+            raise RetryableProviderError("Google Drive folder listing timed out") from exc
+
+        if response.status_code >= 500:
+            raise RetryableProviderError(f"Google Drive folder listing returned {response.status_code}")
+        if response.status_code >= 400:
+            raise ProviderRequestRejected(
+                f"Google Drive folder listing returned {response.status_code}: "
+                f"{describe_http_error(response)}"
+            )
+
+        files = response.json().get("files", [])
+        logger.debug(
+            "google_drive_folder_listed",
+            folder_id=folder_id,
+            depth=_depth,
+            files=[{"id": f.get("id"), "name": f.get("name"), "mimeType": f.get("mimeType")} for f in files],
+        )
+
+        for file in files:
+            if _is_video_file(file):
+                return file["id"], False
+
+        subfolders = [f for f in files if f.get("mimeType") == _DRIVE_FOLDER_MIME_TYPE]
+        saw_subfolder = bool(subfolders)
+        if _depth >= _MAX_DRIVE_FOLDER_RECURSION_DEPTH:
+            return None, saw_subfolder
+
+        for subfolder in subfolders:
+            file_id, nested_saw_subfolder = self._find_first_video_in_drive_folder(
+                httpx, subfolder["id"], _depth=_depth + 1
+            )
+            saw_subfolder = saw_subfolder or nested_saw_subfolder
+            if file_id is not None:
+                return file_id, saw_subfolder
+
+        return None, saw_subfolder
 
 
 def _import_httpx():
