@@ -16,6 +16,7 @@ from content_factory.services.idempotency import (
     IdempotencyInProgress,
     _get_or_create_record,
     compute_fingerprint,
+    invalidate_completed_record,
     run_idempotent,
 )
 
@@ -250,6 +251,64 @@ def test_run_idempotent_recovers_when_work_fn_fails_via_a_db_level_error(db_sess
     survivors = db_session.query(SourceVideo).filter(SourceVideo.external_source_id == "dup-1").all()
     assert len(survivors) == 1
     assert survivors[0].id == existing.id
+
+
+def test_invalidate_completed_record_forces_a_completed_record_back_to_failed(db_session):
+    """Regression for the real Content Rewards production incident: a
+    completed sync's downloaded file can vanish later (e.g. a redeploy on
+    a hosting plan with no persistent disk wipes local storage) without
+    the database ever finding out. A caller that independently discovers
+    the backing file is gone must be able to force a retry - reusing the
+    already-tested FAILED->retry path rather than reinventing one."""
+    db_session.add(
+        IdempotencyRecord(
+            scope="source_video.fetch_external", key="ext-1", request_fingerprint="fp-1",
+            status=ProcessingStatus.COMPLETED, result_entity_type="source_video", result_entity_id=1,
+        )
+    )
+    db_session.commit()
+
+    invalidate_completed_record(
+        db_session, scope="source_video.fetch_external", key="ext-1", reason="file missing from disk"
+    )
+
+    record = (
+        db_session.query(IdempotencyRecord)
+        .filter(IdempotencyRecord.scope == "source_video.fetch_external", IdempotencyRecord.key == "ext-1")
+        .one()
+    )
+    assert record.status == ProcessingStatus.FAILED
+    assert record.error_message == "file missing from disk"
+
+
+def test_invalidate_completed_record_is_a_no_op_for_a_non_completed_record(db_session):
+    """Must never disturb a record that isn't COMPLETED (e.g. still
+    IN_PROGRESS, or already FAILED for an unrelated reason) - those are
+    already handled by run_idempotent's own existing logic."""
+    db_session.add(
+        IdempotencyRecord(
+            scope="source_video.fetch_external", key="ext-2", request_fingerprint="fp-2",
+            status=ProcessingStatus.IN_PROGRESS,
+        )
+    )
+    db_session.commit()
+
+    invalidate_completed_record(
+        db_session, scope="source_video.fetch_external", key="ext-2", reason="should not apply"
+    )
+
+    record = (
+        db_session.query(IdempotencyRecord)
+        .filter(IdempotencyRecord.scope == "source_video.fetch_external", IdempotencyRecord.key == "ext-2")
+        .one()
+    )
+    assert record.status == ProcessingStatus.IN_PROGRESS
+    assert record.error_message is None
+
+
+def test_invalidate_completed_record_is_a_no_op_when_no_record_exists(db_session):
+    invalidate_completed_record(db_session, scope="no.such.scope", key="missing-key", reason="irrelevant")
+    # No error, nothing to assert on - just must not raise.
 
 
 def test_get_or_create_record_falls_back_to_winner_on_concurrent_insert_race(db_session):
