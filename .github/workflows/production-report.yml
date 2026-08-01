@@ -1,0 +1,167 @@
+name: Production data report (read-only)
+
+# Answers "how much has actually flowed through the pipeline so far" -
+# source videos ingested, clips suggested, clips rendered, videos
+# published, HookLibrary entries, and clip_quality_scores rows - without
+# ever writing to the database or touching production code. Every call
+# this workflow makes is a plain GET against endpoints that already exist
+# (POST /auth/token to get a bearer token, then GET /source-videos,
+# GET /source-videos/{id}/clips, GET /videos, GET /hooks) - no new API
+# surface, no schema change, no mutation of any kind.
+#
+# Same reasoning as every other workflow here that touches the live
+# deployment: this project's Claude Code sessions can't reach onrender.com
+# themselves (see docs/PILOT_ENVIRONMENT_STATUS.md), so this is how a
+# "how much data do we have so far" question gets answered without
+# re-running the full, real-cost pipeline verification.
+#
+# Manual trigger only - a real request against a real production service,
+# same policy as every other workflow in this repo that does that.
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: "Live deployment base URL"
+        required: true
+        default: "https://content-factory-bhhd.onrender.com"
+      auth_client_id:
+        description: "Auth client id"
+        required: true
+        default: "pilot-operator"
+
+# Least privilege: this workflow only ever reads (curl GETs against the
+# live deployment) and never pushes, comments, or otherwise writes back
+# to this repository - GITHUB_TOKEN needs nothing beyond checking out
+# the repo's own contents.
+permissions:
+  contents: read
+
+jobs:
+  report:
+    name: Count real production rows via existing read-only GET endpoints
+    runs-on: ubuntu-latest
+    steps:
+      - name: Confirm the deployment is reachable
+        env:
+          BASE_URL: ${{ inputs.base_url }}
+        run: |
+          curl -sS --max-time 20 "$BASE_URL/health" | tee /tmp/health.json
+          echo
+          echo "(a non-200 above, or a connection failure, means the deploy isn't live yet - stop and check Render before re-running this)"
+
+      - name: Get an auth token
+        env:
+          BASE_URL: ${{ inputs.base_url }}
+          AUTH_CLIENT_ID: ${{ inputs.auth_client_id }}
+          AUTH_CLIENT_SECRET: ${{ secrets.AUTH_CLIENT_SECRET }}
+        run: |
+          TOKEN=$(curl -sS --max-time 20 -X POST "$BASE_URL/auth/token" \
+            -H "content-type: application/json" \
+            --data "$(python3 -c 'import json,os; print(json.dumps({"client_id":os.environ["AUTH_CLIENT_ID"],"client_secret":os.environ["AUTH_CLIENT_SECRET"]}))')" \
+            | python3 -c "import sys,json;print(json.load(sys.stdin)['access_token'])")
+          echo "AUTH_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+
+      - name: Count source videos, clips, rendered clips, published videos, hooks, clip quality scores
+        env:
+          BASE_URL: ${{ inputs.base_url }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          BASE_URL = os.environ["BASE_URL"]
+          TOKEN = os.environ["AUTH_TOKEN"]
+          PAGE_SIZE = 200  # Pagination's own hard cap (api/pagination.py: le=200)
+
+          def get(path, params=None):
+              url = BASE_URL + path
+              if params:
+                  url += "?" + "&".join(f"{k}={v}" for k, v in params.items())
+              req = urllib.request.Request(url, headers={"Authorization": f"Bearer {TOKEN}"})
+              with urllib.request.urlopen(req, timeout=30) as resp:
+                  return json.loads(resp.read())
+
+          # source_videos: GET /source-videos is plain offset/limit (clips.py::list_source_videos) -
+          # safe to page through with no quirks.
+          source_video_ids = []
+          offset = 0
+          while True:
+              page = get("/source-videos", {"limit": PAGE_SIZE, "offset": offset})
+              source_video_ids.extend(row["id"] for row in page)
+              if len(page) < PAGE_SIZE:
+                  break
+              offset += PAGE_SIZE
+
+          # clips + rendered clips: GET /source-videos/{id}/clips returns every clip for that
+          # source video in one call, unpaginated (clips.py::list_clips) - one call per source video.
+          clip_count = 0
+          rendered_clip_count = 0
+          for sv_id in source_video_ids:
+              clips = get(f"/source-videos/{sv_id}/clips")
+              clip_count += len(clips)
+              rendered_clip_count += sum(1 for c in clips if c.get("status") == "rendered")
+
+          # videos: GET /videos is plain offset/limit (review.py::list_videos) - covers both the
+          # Script and Clip pipelines; published_video_count and clip_quality_score_count are
+          # both derived from the same pass over it.
+          published_video_count = 0
+          clip_quality_score_count = 0
+          offset = 0
+          while True:
+              page = get("/videos", {"limit": PAGE_SIZE, "offset": offset})
+              for v in page:
+                  if v.get("status") == "published":
+                      published_video_count += 1
+                  if v.get("clip_quality_score") is not None:
+                      clip_quality_score_count += 1
+              if len(page) < PAGE_SIZE:
+                  break
+              offset += PAGE_SIZE
+
+          # hooks (HookLibrary): GET /hooks goes through content_intelligence.get_top_hooks(),
+          # whose *first* page (offset=0) diversifies across hook_type via round-robin rather
+          # than returning a plain top-N slice - see services/content_intelligence.py's own
+          # docstring ("Diversification only makes sense for the first page"). A single page of
+          # up to 200 is exact whenever the real total is under 200 (the common case for this
+          # project today); beyond that, continuing to page past a full first page risks
+          # double-counting or skipping rows, since page 2+ uses the plain (non-diversified)
+          # offset path against the same ordering. This workflow reports an honest lower bound
+          # in that case rather than a number that could be wrong.
+          first_page = get("/hooks", {"limit": PAGE_SIZE, "offset": 0})
+          if len(first_page) < PAGE_SIZE:
+              hook_library_entry_count = len(first_page)
+              hook_count_is_exact = True
+          else:
+              hook_library_entry_count = len(first_page)
+              hook_count_is_exact = False
+
+          report = {
+              "source_video_count": len(source_video_ids),
+              "clip_count": clip_count,
+              "rendered_clip_count": rendered_clip_count,
+              "published_video_count": published_video_count,
+              "hook_library_entry_count": hook_library_entry_count,
+              "hook_library_entry_count_is_exact": hook_count_is_exact,
+              "clip_quality_score_count": clip_quality_score_count,
+          }
+
+          hook_label = str(hook_library_entry_count) + ("" if hook_count_is_exact else "+")
+          print("Source Videos:", len(source_video_ids))
+          print("Clips:", clip_count)
+          print("Rendered:", rendered_clip_count)
+          print("Published:", published_video_count)
+          print("HookLibrary:", hook_label)
+          print("Quality Scores:", clip_quality_score_count)
+
+          print()
+          print(json.dumps(report, indent=2))
+          if not hook_count_is_exact:
+              print(
+                  f"\nNote: hook_library_entry_count ({hook_library_entry_count}) is a lower "
+                  "bound, not an exact total - the /hooks endpoint's first page diversifies "
+                  "across hook_type, so paging further isn't reliably countable without risking "
+                  "double-counting. See the comment above for why."
+              )
+          PY
