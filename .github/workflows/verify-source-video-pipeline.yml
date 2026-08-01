@@ -1,0 +1,46 @@
+name: Verify pipeline for existing source videos
+
+# Runs scripts/verify_source_video_pipeline.sh against a live deployment,
+# targeting specific already-registered source_video_ids (e.g. ones just
+# ingested via the Content Rewards connector) rather than uploading a
+# fresh synthetic video like verify-production.yml does. Same reasoning
+# as every other production-hitting workflow in this repo: this session's
+# sandbox network policy blocks onrender.com entirely, so this can only
+# be verified for real from a GitHub-hosted runner.
+#
+# Manual trigger only: this calls real transcription/LLM/render/publish
+# endpoints on a real production service, so it must never fire
+# automatically on push/PR.
+#
+# One-time setup already done for the other production workflows applies
+# here too: a repository secret named AUTH_CLIENT_SECRET.
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: "Live deployment base URL"
+        required: true
+        default: "https://content-factory-bhhd.onrender.com"
+      auth_client_id:
+        description: "Auth client id"
+        required: true
+        default: "pilot-operator"
+      source_video_ids:
+        description: "Space or comma-separated source_video_id list to verify"
+        required: true
+
+jobs:
+  verify:
+    name: Verify transcribe -> analyze -> render -> review -> publish for each id
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run the verification
+        env:
+          BASE_URL: ${{ inputs.base_url }}
+          AUTH_CLIENT_ID: ${{ inputs.auth_client_id }}
+          AUTH_CLIENT_SECRET: ${{ secrets.AUTH_CLIENT_SECRET }}
+          SOURCE_VIDEO_IDS: ${{ inputs.source_video_ids }}
+        run: bash scripts/verify_source_video_pipeline.sh
