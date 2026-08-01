@@ -45,6 +45,66 @@ AUTH=(-H "Authorization: Bearer $TOKEN")
 declare -a SUMMARY=()
 OVERALL_FAILED=0
 
+# Real gap this closes: analyze (an LLM call) and review's publish cascade
+# can genuinely take longer than a first, aggressive curl --max-time to
+# return a response - the client giving up is not the same as the server
+# failing. A synchronous FastAPI endpoint keeps running in its worker
+# thread to completion regardless of the client disconnecting, so a curl
+# timeout here must poll the existing read-only GET endpoints for the
+# real outcome instead of reporting a false FAIL.
+_POLL_INTERVAL_S=15
+_POLL_MAX_ATTEMPTS=20  # 20 * 15s = 5 extra minutes of polling
+
+_poll_for_clips() {
+  local sv_id="$1"
+  local attempt=0 clips="[]" count=0
+  while [[ $attempt -lt $_POLL_MAX_ATTEMPTS ]]; do
+    sleep "$_POLL_INTERVAL_S"
+    clips=$(curl -sS --max-time 30 "$BASE_URL/source-videos/$sv_id/clips" "${AUTH[@]}")
+    count=$(echo "$clips" | python3 -c "import sys,json;print(len(json.load(sys.stdin)))" 2>/dev/null || echo 0)
+    if [[ "$count" -gt 0 ]]; then
+      echo "$clips"
+      return 0
+    fi
+    attempt=$((attempt + 1))
+  done
+  echo "$clips"
+}
+
+# Polls GET /videos/{id} until its status moves off pending_review (the
+# review decision itself was recorded), then checks GET /publications for
+# a matching video_id to report the equivalent of the direct response's
+# auto_publish_status/auto_publish_detail. Prints "<video_status>|<publication_status>".
+_poll_for_review_outcome() {
+  local video_id="$1"
+  local attempt=0 video_status=""
+  while [[ $attempt -lt $_POLL_MAX_ATTEMPTS ]]; do
+    sleep "$_POLL_INTERVAL_S"
+    video_status=$(
+      curl -sS --max-time 30 "$BASE_URL/videos/$video_id" "${AUTH[@]}" \
+        | python3 -c "import sys,json;print(json.load(sys.stdin).get('status',''))" 2>/dev/null
+    )
+    if [[ -n "$video_status" && "$video_status" != "pending_review" ]]; then
+      break
+    fi
+    attempt=$((attempt + 1))
+  done
+
+  local publication_status=""
+  if [[ -n "$video_status" && "$video_status" != "pending_review" ]]; then
+    publication_status=$(
+      curl -sS --max-time 30 "$BASE_URL/publications" "${AUTH[@]}" \
+        | python3 -c "
+import sys, json
+pubs = json.load(sys.stdin)
+matches = [p for p in pubs if p.get('video_id') == $video_id]
+print(matches[-1]['status'] if matches else '')
+" 2>/dev/null
+    )
+  fi
+  echo "${video_status}|${publication_status}"
+}
+
 verify_one_video() {
   local sv_id="$1"
   local transcription="not run" clip_selection="not run" render="not run" publish="not run"
@@ -71,8 +131,12 @@ verify_one_video() {
 
   echo "-- analyze (clip selection) --"
   local clips
-  clips=$(curl -sS --max-time 120 -X POST "$BASE_URL/source-videos/$sv_id/analyze" "${AUTH[@]}" \
+  clips=$(curl -sS --max-time 600 -X POST "$BASE_URL/source-videos/$sv_id/analyze" "${AUTH[@]}" \
     -H "content-type: application/json" -d '{"max_clips": 3}')
+  if [[ $? -ne 0 ]]; then
+    echo "analyze request itself timed out client-side - the LLM call may still be running server-side; polling GET /source-videos/$sv_id/clips instead of failing immediately"
+    clips=$(_poll_for_clips "$sv_id")
+  fi
   echo "$clips"
   local clip_count first_clip_id
   clip_count=$(echo "$clips" | python3 -c "import sys,json;print(len(json.load(sys.stdin)))" 2>/dev/null || echo 0)
@@ -106,8 +170,33 @@ verify_one_video() {
 
   echo "-- review approval -> publish cascade --"
   local review publish_status publish_detail
-  review=$(curl -sS --max-time 60 -X POST "$BASE_URL/videos/$video_id/review" "${AUTH[@]}" \
+  review=$(curl -sS --max-time 300 -X POST "$BASE_URL/videos/$video_id/review" "${AUTH[@]}" \
     -H "content-type: application/json" -d '{"decision":"approved"}')
+  if [[ $? -ne 0 ]]; then
+    echo "review request itself timed out client-side - the publish cascade may still be running server-side; polling GET /videos/$video_id and GET /publications instead of failing immediately"
+    local polled video_status publication_status
+    polled=$(_poll_for_review_outcome "$video_id")
+    video_status="${polled%%|*}"
+    publication_status="${polled##*|}"
+    echo "polled video status: '$video_status', matching publication status: '$publication_status'"
+    case "$video_status" in
+      published) publish="PASS (video status became published after polling)" ;;
+      approved|rejected|revision_requested)
+        if [[ -n "$publication_status" ]]; then
+          publish="PASS (review recorded as $video_status, publication status=$publication_status after polling)"
+        else
+          publish="FAIL (review recorded as $video_status, but no publication found after polling)"
+          OVERALL_FAILED=1
+        fi
+        ;;
+      *)
+        publish="FAIL (review request never completed even after $((_POLL_MAX_ATTEMPTS * _POLL_INTERVAL_S / 60)) extra minutes of polling - a genuine timeout, not just a slow response)"
+        OVERALL_FAILED=1
+        ;;
+    esac
+    SUMMARY+=("$sv_id | transcription=$transcription | clip_selection=$clip_selection | render=$render | publish=$publish")
+    return
+  fi
   echo "$review"
   publish_status=$(echo "$review" | python3 -c "import sys,json;print(json.load(sys.stdin).get('auto_publish_status') or '')" 2>/dev/null)
   publish_detail=$(echo "$review" | python3 -c "import sys,json;print(json.load(sys.stdin).get('auto_publish_detail') or '')" 2>/dev/null)
