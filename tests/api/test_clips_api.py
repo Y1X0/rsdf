@@ -165,6 +165,40 @@ def test_render_clip_with_null_default_renderer_produces_video_ready_for_review(
     assert review_resp.json()["decision"] == "approved"
 
 
+def test_render_clip_response_includes_a_real_clip_quality_score(client):
+    """Real gap this closes: a Clip Factory video previously always showed
+    quality_score: null (services/quality_scoring.py's QualityScore is
+    Script-pipeline-only) - the render response must now include a real
+    clip_quality_score block instead."""
+    created = _upload_source_video(client).json()
+    client.post(f"/source-videos/{created['id']}/transcribe", json={})
+
+    from content_factory.db.models.clip import Clip
+
+    db = client.db_session_factory()
+    try:
+        clip = Clip(
+            source_video_id=created["id"], start_s=0.0, end_s=5.0,
+            hook_text="hook", hook_strength_score=55.5,
+        )
+        db.add(clip)
+        db.commit()
+        clip_id = clip.id
+    finally:
+        db.close()
+
+    render_resp = client.post(f"/clips/{clip_id}/render", json={})
+    assert render_resp.status_code == 200
+    video = render_resp.json()
+
+    assert video["clip_quality_score"] is not None
+    assert video["clip_quality_score"]["hook_strength_score"] == 55.5
+    assert video["clip_quality_score"]["retention_prediction_score"] is None
+    assert video["clip_quality_score"]["cta_quality_score"] is None
+    assert video["clip_quality_score"]["speech_clarity_score"] is None
+    assert video["quality_score"] is None  # the Script-pipeline field stays untouched/absent
+
+
 def test_render_clip_is_idempotent(client):
     created = _upload_source_video(client).json()
 

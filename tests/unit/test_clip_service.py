@@ -337,6 +337,46 @@ def test_render_clip_creates_video_row_reusing_existing_pipeline_fields(db_sessi
     assert clip.status == ClipStatus.RENDERED
 
 
+def test_render_clip_creates_a_clip_quality_score_row(db_session, tmp_media_dir):
+    """Real gap this closes: Clip Factory videos previously got no
+    quality scoring at all (services/quality_scoring.py's QualityScore is
+    Script-pipeline-only) - render_clip must now also produce a real
+    ClipQualityScore row, using signals this pipeline already has."""
+    from content_factory.db.models.clip import Clip
+    from content_factory.db.models.clip_quality import ClipQualityScore
+
+    source_video = clip_service.register_source_video(
+        db_session, campaign_id=None, title="My Video", storage_path="/tmp/x.mp4"
+    )
+    source_video.transcript_segments = [{"start": 0.0, "end": 10.0, "text": "hello world"}]
+    source_video.transcript_words = [
+        {"start": 1.0, "end": 2.0, "word": "hello"},
+        {"start": 2.0, "end": 3.0, "word": "world"},
+    ]
+    db_session.flush()
+
+    clip = Clip(
+        source_video_id=source_video.id, start_s=1.0, end_s=6.0,
+        hook_text="hook", hook_strength_score=64.0, status=ClipStatus.SUGGESTED,
+    )
+    db_session.add(clip)
+    db_session.flush()
+
+    renderer = NullClipRenderer(storage_dir=tmp_media_dir / "clips")
+    video = clip_service.render_clip(db_session, clip=clip, source_video=source_video, clip_renderer=renderer)
+
+    quality = db_session.query(ClipQualityScore).filter(ClipQualityScore.video_id == video.id).one()
+    assert quality.hook_strength_score == 64.0
+    # source_video.storage_path doesn't exist on disk in this test - scene
+    # detection best-effort-fails to an empty list, so alignment is an
+    # honest "unknown" (None), never a fabricated 0.
+    assert quality.scene_alignment_score is None
+    assert quality.caption_coverage_score is not None
+    assert quality.retention_prediction_score is None
+    assert quality.cta_quality_score is None
+    assert quality.speech_clarity_score is None
+
+
 def test_render_clip_refuses_to_render_an_already_rendered_clip_again(db_session, tmp_media_dir):
     """Real bug found via a live end-to-end run: the renderer names its
     output file from clip.id alone (clip_{id}.mp4), not video.id - calling

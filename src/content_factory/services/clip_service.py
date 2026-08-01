@@ -9,7 +9,10 @@ quality_scoring.score_video (originality/policy-risk scoring against a
 Script's own generated text, which doesn't apply to real footage) in favor
 of a much smaller structural QC check, and goes straight to
 VideoStatus.PENDING_REVIEW: a human always reviews before publish either
-way, regardless of which pipeline produced the Video row.
+way, regardless of which pipeline produced the Video row. It does get its
+own post-render quality scoring though - see clip_quality_scoring.py,
+computed from real, Clip-specific signals (hook strength, caption
+coverage, scene-cut alignment) rather than the Script pipeline's fields.
 """
 
 from datetime import UTC, datetime
@@ -27,7 +30,7 @@ from content_factory.db.models.video import Video
 from content_factory.diarization.base import SpeakerDiarizationProvider, SpeakerTurn
 from content_factory.llm.base import LLMClient
 from content_factory.logging_config import get_logger
-from content_factory.services import content_intelligence
+from content_factory.services import clip_quality_scoring, content_intelligence
 from content_factory.services.media_backup import (
     MediaBackupProvider,
     NullMediaBackupProvider,
@@ -356,6 +359,25 @@ def render_clip(
         video.qc_status = qc_status
         video.qc_notes = qc_notes
         db.flush()
+
+        # Independent of structural QC pass/fail above - a clip that fails
+        # duration QC still gets a real quality score, since a reviewer
+        # benefits from both signals regardless of each other. Scene
+        # changes are re-detected here rather than persisted from the
+        # earlier analyze step: best-effort and cheap (decode-only, no
+        # encoding - see scene_detection.py's own docstring), and avoids a
+        # schema change just to carry a list of floats between pipeline
+        # stages.
+        scene_changes = detect_scene_changes(source_video.storage_path)
+        clip_quality_scoring.score_clip_video(
+            db,
+            video=video,
+            clip=clip,
+            words=words,
+            scene_changes=scene_changes,
+            render_start_s=render_start_s,
+            render_end_s=render_end_s,
+        )
 
         clip.status = ClipStatus.RENDERED
         db.flush()

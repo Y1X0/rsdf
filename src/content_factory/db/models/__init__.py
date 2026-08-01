@@ -7,6 +7,7 @@ from content_factory.db.models.analytics import CostLedger, MetricsSnapshot, Rev
 from content_factory.db.models.budget import BudgetCeiling, ProviderQuotaUsage
 from content_factory.db.models.campaign import Campaign, CampaignScore
 from content_factory.db.models.clip import Clip
+from content_factory.db.models.clip_quality import ClipQualityScore
 from content_factory.db.models.content import ContentIdea, ResearchBrief, Script
 from content_factory.db.models.experiment import Experiment, ExperimentResult
 from content_factory.db.models.hook import HookLibrary, LearningPattern
@@ -26,6 +27,7 @@ __all__ = [
     "Campaign",
     "CampaignScore",
     "Clip",
+    "ClipQualityScore",
     "ContentIdea",
     "CostLedger",
     "Experiment",

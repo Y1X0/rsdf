@@ -5,17 +5,21 @@ exactly one place."""
 from sqlalchemy.orm import Session
 
 from content_factory.db.models.account import OwnedAccount
+from content_factory.db.models.clip_quality import ClipQualityScore
 from content_factory.db.models.quality import QualityScore
 from content_factory.db.models.video import Video
 from content_factory.schemas.account import OwnedAccountOut
-from content_factory.schemas.video import QualityScoreOut, VideoOut
+from content_factory.schemas.video import ClipQualityScoreOut, QualityScoreOut, VideoOut
 
 
 def to_video_out(db: Session, video: Video) -> VideoOut:
     quality = db.query(QualityScore).filter(QualityScore.video_id == video.id).one_or_none()
+    clip_quality = db.query(ClipQualityScore).filter(ClipQualityScore.video_id == video.id).one_or_none()
     out = VideoOut.model_validate(video)
     if quality is not None:
         out.quality_score = QualityScoreOut.model_validate(quality)
+    if clip_quality is not None:
+        out.clip_quality_score = ClipQualityScoreOut.model_validate(clip_quality)
     return out
 
 
