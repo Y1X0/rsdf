@@ -456,3 +456,73 @@ def test_sync_content_rewards_redownloads_when_the_synced_file_is_missing_from_d
         assert os.path.exists(refreshed.storage_path)
     finally:
         db.close()
+
+
+def test_transcribe_recovers_a_content_rewards_video_whose_file_vanished_from_disk(client, tmp_path):
+    """Real production incident, distinct from the sync-endpoint one this
+    connector already self-heals: this service's local disk has no
+    persistent storage, so a spin-down/restart can wipe a SourceVideo's
+    file at any time - independent of whether sync-content-rewards is ever
+    called again. Calling /transcribe directly on such a row used to crash
+    with a raw FileNotFoundError (500); it must instead recover the file
+    into the exact same row and then transcribe normally."""
+    from content_factory.api import deps
+    from content_factory.api.main import app
+    from content_factory.db.models.enums import SourceVideoOrigin
+    from content_factory.db.models.source_video import SourceVideo
+
+    vanished_path = str(tmp_path / "vanished_after_restart.mp4")  # never created - simulates the wipe
+    db = client.db_session_factory()
+    try:
+        sv = SourceVideo(
+            title="Fake Video 1", source=SourceVideoOrigin.CONTENT_REWARDS,
+            external_source_id="ext-1", storage_path=vanished_path,
+        )
+        db.add(sv)
+        db.commit()
+        sv_id = sv.id
+    finally:
+        db.close()
+
+    fake_provider = _FakeContentSourceProvider()
+    app.dependency_overrides[deps.get_content_source_provider] = lambda: fake_provider
+    try:
+        resp = client.post(f"/source-videos/{sv_id}/transcribe", json={})
+    finally:
+        del app.dependency_overrides[deps.get_content_source_provider]
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["transcription_status"] == "completed"
+    assert "ext-1" in fake_provider.download_calls
+
+    db = client.db_session_factory()
+    try:
+        refreshed = db.get(SourceVideo, sv_id)
+        assert refreshed.storage_path != vanished_path
+        assert os.path.exists(refreshed.storage_path)
+    finally:
+        db.close()
+
+
+def test_transcribe_returns_a_clear_conflict_when_the_missing_file_cannot_be_recovered(client, tmp_path):
+    """A manually-uploaded video (source=upload, the default) has no
+    external source to re-fetch from if its file vanishes - this must
+    surface as a clear 409 with an explanatory detail, never a raw,
+    unhandled FileNotFoundError (opaque 500)."""
+    from content_factory.db.models.source_video import SourceVideo
+
+    vanished_path = str(tmp_path / "vanished_after_restart.mp4")
+    db = client.db_session_factory()
+    try:
+        sv = SourceVideo(title="Manually uploaded", storage_path=vanished_path)
+        db.add(sv)
+        db.commit()
+        sv_id = sv.id
+    finally:
+        db.close()
+
+    resp = client.post(f"/source-videos/{sv_id}/transcribe", json={})
+
+    assert resp.status_code == 409
+    assert "cannot be automatically recovered" in resp.json()["detail"]

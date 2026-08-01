@@ -48,6 +48,7 @@ from content_factory.schemas.source_video import (
 from content_factory.schemas.video import VideoOut
 from content_factory.services import clip_service, content_intelligence, idempotency
 from content_factory.services.budget_governor import enforce_budget
+from content_factory.services.media_availability import MediaUnavailableError, ensure_local_media_available
 from content_factory.services.media_backup import MediaBackupProvider
 from content_factory.transcription.base import TranscriptionProvider
 from content_factory.video_clipping.base import ClipRenderer
@@ -294,10 +295,22 @@ def transcribe_source_video(
     db: Session = Depends(get_db),
     transcription_provider: TranscriptionProvider = Depends(get_transcription_provider),
     diarization_provider: SpeakerDiarizationProvider = Depends(get_diarization_provider),
+    content_source_provider: ContentSourceProvider = Depends(get_content_source_provider),
     notification_provider=Depends(get_notification_provider),
     _principal: dict = Depends(require_operator),
 ) -> SourceVideoOut:
     source_video = _get_source_video_or_404(db, source_video_id)
+    settings = get_settings()
+    try:
+        ensure_local_media_available(
+            db,
+            source_video=source_video,
+            content_source_provider=content_source_provider,
+            storage_dir=settings.media_storage_path() / "source_videos",
+        )
+    except MediaUnavailableError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+
     enforce_budget(
         db,
         niche_id=_niche_id_for_campaign(db, source_video.campaign_id),
